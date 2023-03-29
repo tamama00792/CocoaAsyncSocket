@@ -50,16 +50,17 @@ extern NSString *const GCDAsyncSocketSSLDiffieHellmanParameters;
 #define GCDAsyncSocketLoggingContext 65535
 
 
+// socket连接错误域
 typedef NS_ERROR_ENUM(GCDAsyncSocketErrorDomain, GCDAsyncSocketError) {
-	GCDAsyncSocketNoError = 0,           // Never used
-	GCDAsyncSocketBadConfigError,        // Invalid configuration
-	GCDAsyncSocketBadParamError,         // Invalid parameter was passed
-	GCDAsyncSocketConnectTimeoutError,   // A connect operation timed out
-	GCDAsyncSocketReadTimeoutError,      // A read operation timed out
-	GCDAsyncSocketWriteTimeoutError,     // A write operation timed out
-	GCDAsyncSocketReadMaxedOutError,     // Reached set maxLength without completing
-	GCDAsyncSocketClosedError,           // The remote peer closed the connection
-	GCDAsyncSocketOtherError,            // Description provided in userInfo
+	GCDAsyncSocketNoError = 0,           // Never used，没有错误
+		GCDAsyncSocketBadConfigError,        // Invalid configuration，非法配置
+	GCDAsyncSocketBadParamError,         // Invalid parameter was passed，非法参数
+	GCDAsyncSocketConnectTimeoutError,   // A connect operation timed out，连接超时
+	GCDAsyncSocketReadTimeoutError,      // A read operation timed out，读超时
+	GCDAsyncSocketWriteTimeoutError,     // A write operation timed out，写超时
+	GCDAsyncSocketReadMaxedOutError,     // Reached set maxLength without completing，读超过了缓冲区最大值
+	GCDAsyncSocketClosedError,           // The remote peer closed the connection，远端断开连接
+	GCDAsyncSocketOtherError,            // Description provided in userInfo，其他原因，描述存在userInfo中
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -85,18 +86,25 @@ typedef NS_ERROR_ENUM(GCDAsyncSocketErrorDomain, GCDAsyncSocketError) {
  * 
  * The delegate queue and socket queue can optionally be the same.
 **/
+// 初始化
 - (instancetype)init;
+// 初始化，指定socket运行的队列
 - (instancetype)initWithSocketQueue:(nullable dispatch_queue_t)sq;
+// 初始化，指定代理对象，指定代理方法执行的队列
 - (instancetype)initWithDelegate:(nullable id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(nullable dispatch_queue_t)dq;
-- (instancetype)initWithDelegate:(nullable id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(nullable dispatch_queue_t)dq socketQueue:(nullable dispatch_queue_t)sq NS_DESIGNATED_INITIALIZER;
+// 初始化，指定代理对象，指定代理方法执行的队列，指定socket运行的队列
+- (instancetype)initWithDelegate:(nullable id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(nullable dispatch_queue_t)dq socketQueue:(nullable dispatch_queue_t)sq NS_DESIGNATED_INITIALIZER;// 指定构造器
 
 /**
  * Create GCDAsyncSocket from already connect BSD socket file descriptor
 **/
+// 通过一个已经连接的BSD socket文件描述符创建，并指定socket执行的队列，并传入错误指针
 + (nullable instancetype)socketFromConnectedSocketFD:(int)socketFD socketQueue:(nullable dispatch_queue_t)sq error:(NSError**)error;
 
+// 通过一个已经连接的BSD socket文件描述符创建，并指定代理对象，代理方法执行的队列，并传入错误指针
 + (nullable instancetype)socketFromConnectedSocketFD:(int)socketFD delegate:(nullable id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(nullable dispatch_queue_t)dq error:(NSError**)error;
 
+// 通过一个已经连接的BSD socket文件描述符创建，并指定代理对象，代理方法执行的队列，指定socket执行的队列，并传入错误指针
 + (nullable instancetype)socketFromConnectedSocketFD:(int)socketFD delegate:(nullable id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(nullable dispatch_queue_t)dq socketQueue:(nullable dispatch_queue_t)sq error:(NSError **)error;
 
 #pragma mark Configuration

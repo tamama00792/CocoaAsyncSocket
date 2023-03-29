@@ -894,8 +894,9 @@ enum GCDAsyncSocketConfig
 {
 	uint32_t flags;
 	uint16_t config;
-	
+	// 代理对象
 	__weak id<GCDAsyncSocketDelegate> delegate;
+	// 代理方法执行的队列
 	dispatch_queue_t delegateQueue;
 	
 	int socket4FD;
@@ -967,16 +968,19 @@ enum GCDAsyncSocketConfig
 		delegate = aDelegate;
 		delegateQueue = dq;
 		
+		// sdkiOS6.0之前，arc对gcd对象不支持管理生命周期
 		#if !OS_OBJECT_USE_OBJC
 		if (dq) dispatch_retain(dq);
 		#endif
 		
+		// 初始化一些ivar
 		socket4FD = SOCKET_NULL;
 		socket6FD = SOCKET_NULL;
 		socketUN = SOCKET_NULL;
 		socketUrl = nil;
 		stateIndex = 0;
 		
+		// 判断sq的队列，不可以为并发队列
 		if (sq)
 		{
 			NSAssert(sq != dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0),
@@ -993,6 +997,7 @@ enum GCDAsyncSocketConfig
 		}
 		else
 		{
+		// 如果没传入则创建一个socket所在的队列
 			socketQueue = dispatch_queue_create([GCDAsyncSocketQueueName UTF8String], NULL);
 		}
 		
@@ -1013,17 +1018,20 @@ enum GCDAsyncSocketConfig
 		// by assigning the value of the ivar to the address of the ivar.
 		// Thus: IsOnSocketQueueOrTargetQueueKey == &IsOnSocketQueueOrTargetQueueKey;
 		
+		// 只需要一个ivar的地址去作为标识的key，为了不用每次都写&，所以这么声明
 		IsOnSocketQueueOrTargetQueueKey = &IsOnSocketQueueOrTargetQueueKey;
 		
 		void *nonNullUnusedPointer = (__bridge void *)self;
+		// 指定socket队列一个信息，key是ivar的地址，value是自身，不传入析构函数
 		dispatch_queue_set_specific(socketQueue, IsOnSocketQueueOrTargetQueueKey, nonNullUnusedPointer, NULL);
-		
+		// 初始化读队列的
 		readQueue = [[NSMutableArray alloc] initWithCapacity:5];
 		currentRead = nil;
-		
+		// 初始化写队列
 		writeQueue = [[NSMutableArray alloc] initWithCapacity:5];
 		currentWrite = nil;
 		
+		// 初始化缓冲区
 		preBuffer = [[GCDAsyncSocketPreBuffer alloc] initWithCapacity:(1024 * 4)];
         alternateAddressDelay = 0.3;
 	}
