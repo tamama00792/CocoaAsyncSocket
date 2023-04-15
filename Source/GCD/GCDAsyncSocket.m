@@ -1748,12 +1748,13 @@ enum GCDAsyncSocketConfig
 		{
 		// 创建读源
             self->accept4Source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, self->socket4FD, 0, self->socketQueue);
-			
+            	
             int socketFD = self->socket4FD;
             dispatch_source_t acceptSource = self->accept4Source;
 			
 			__weak GCDAsyncSocket *weakSelf = self;
 			
+			// 设置读源的事件
             dispatch_source_set_event_handler(self->accept4Source, ^{ @autoreleasepool {
 			#pragma clang diagnostic push
 			#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -1762,24 +1763,25 @@ enum GCDAsyncSocketConfig
 				if (strongSelf == nil) return_from_block;
 				
 				LogVerbose(@"event4Block");
-				
+				// 获取连接数，因为此处是listen状态的socketfd触发的，所以拿到的不是字节数，而是全连接队列的长度，也就可以用作连接数
 				unsigned long i = 0;
 				unsigned long numPendingConnections = dispatch_source_get_data(acceptSource);
 				
 				LogVerbose(@"numPendingConnections: %lu", numPendingConnections);
-				
+				// 先尝试接受连接，如果成功则继续接受，直到失败或到达了先前获取的连接数量为止
 				while ([strongSelf doAccept:socketFD] && (++i < numPendingConnections));
 				
 			#pragma clang diagnostic pop
 			}});
 			
-			
+			// 处理源取消后的操作
             dispatch_source_set_cancel_handler(self->accept4Source, ^{
 			#pragma clang diagnostic push
 			#pragma clang diagnostic warning "-Wimplicit-retain-self"
 				
 				#if !OS_OBJECT_USE_OBJC
 				LogVerbose(@"dispatch_release(accept4Source)");
+				// 释放源，关闭socketFD
 				dispatch_release(acceptSource);
 				#endif
 				
@@ -1790,9 +1792,10 @@ enum GCDAsyncSocketConfig
 			});
 			
 			LogVerbose(@"dispatch_resume(accept4Source)");
+			// 启用源
             dispatch_resume(self->accept4Source);
 		}
-		
+		// 对IPv6处理，逻辑与IPv4一致
 		if (enableIPv6)
 		{
             self->accept6Source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, self->socket6FD, 0, self->socketQueue);
@@ -1801,7 +1804,7 @@ enum GCDAsyncSocketConfig
             dispatch_source_t acceptSource = self->accept6Source;
 			
 			__weak GCDAsyncSocket *weakSelf = self;
-			
+			// 设置源触发事件回调
             dispatch_source_set_event_handler(self->accept6Source, ^{ @autoreleasepool {
 			#pragma clang diagnostic push
 			#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -1810,17 +1813,17 @@ enum GCDAsyncSocketConfig
 				if (strongSelf == nil) return_from_block;
 				
 				LogVerbose(@"event6Block");
-				
+				// 获取连接数
 				unsigned long i = 0;
 				unsigned long numPendingConnections = dispatch_source_get_data(acceptSource);
 				
 				LogVerbose(@"numPendingConnections: %lu", numPendingConnections);
-				
+				// 依次接受连接
 				while ([strongSelf doAccept:socketFD] && (++i < numPendingConnections));
 				
 			#pragma clang diagnostic pop
 			}});
-			
+			// 设置取消后释放和关闭
             dispatch_source_set_cancel_handler(self->accept6Source, ^{
 			#pragma clang diagnostic push
 			#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -1835,16 +1838,16 @@ enum GCDAsyncSocketConfig
 				
 			#pragma clang diagnostic pop
 			});
-			
+			// 启用源
 			LogVerbose(@"dispatch_resume(accept6Source)");
             dispatch_resume(self->accept6Source);
 		}
-		
+		// 标记socket开始
         self->flags |= kSocketStarted;
 		
 		result = YES;
 	}};
-	
+	// 保证在socket队列上调用前面定义的block
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
 		block();
 	else
