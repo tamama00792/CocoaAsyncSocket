@@ -29,12 +29,13 @@
 #import <sys/un.h>
 #import <unistd.h>
 
+// 判定不是arc则警告
 #if ! __has_feature(objc_arc)
 #warning This file must be compiled with ARC. Use -fobjc-arc flag (or convert project to ARC).
 // For more information see: https://github.com/robbiehanson/CocoaAsyncSocket/wiki/ARC
 #endif
 
-
+// 默认关闭日志
 #ifndef GCDAsyncSocketLoggingEnabled
 #define GCDAsyncSocketLoggingEnabled 0
 #endif
@@ -99,6 +100,7 @@ static const int logLevel = GCDAsyncSocketLogLevel;
  * can sometimes be mistaken for a return point of the enclosing method.
  * This makes inline blocks a bit easier to read.
 **/
+// 为了代码可读性，指明是block中的return
 #define return_from_block  return
 
 /**
@@ -106,6 +108,7 @@ static const int logLevel = GCDAsyncSocketLogLevel;
  * It represents the index of the socket within the kernel.
  * This makes invalid file descriptor comparisons easier to read.
 **/
+// socket文件描述符本身就是个整型数，表示socket在kernel中的索引。这里用来表示非法的文件描述符
 #define SOCKET_NULL -1
 
 
@@ -130,40 +133,66 @@ NSString *const GCDAsyncSocketSSLALPN = @"GCDAsyncSocketSSLALPN";
 NSString *const GCDAsyncSocketSSLDiffieHellmanParameters = @"GCDAsyncSocketSSLDiffieHellmanParameters";
 #endif
 
+// 标识socket的一些配置和状态
 enum GCDAsyncSocketFlags
 {
+// socket开始，可能在等待接收连接中或者在连接远端中
 	kSocketStarted                 = 1 <<  0,  // If set, socket has been started (accepting/connecting)
+	// socket连接建立成功
 	kConnected                     = 1 <<  1,  // If set, the socket is connected
+	// 不允许读和写
 	kForbidReadsWrites             = 1 <<  2,  // If set, no new reads or writes are allowed
+	// 由于可能超时，读操作被暂停
 	kReadsPaused                   = 1 <<  3,  // If set, reads are paused due to possible timeout
+	// 由于可能超时，写操作被暂停
 	kWritesPaused                  = 1 <<  4,  // If set, writes are paused due to possible timeout
+	// 在读队列清空后才断开连接
 	kDisconnectAfterReads          = 1 <<  5,  // If set, disconnect after no more reads are queued
+	// 在写队列清空后才断开连接
 	kDisconnectAfterWrites         = 1 <<  6,  // If set, disconnect after no more writes are queued
+	// 表示socket能接收字节
 	kSocketCanAcceptBytes          = 1 <<  7,  // If set, we know socket can accept bytes. If unset, it's unknown.
+	// 表示读源被暂停了
 	kReadSourceSuspended           = 1 <<  8,  // If set, the read source is suspended
+	// 表示写源被暂停了
 	kWriteSourceSuspended          = 1 <<  9,  // If set, the write source is suspended
+	// 表示升级到TLS
 	kQueuedTLS                     = 1 << 10,  // If set, we've queued an upgrade to TLS
+	// 表示正在等待TLS协商完成
 	kStartingReadTLS               = 1 << 11,  // If set, we're waiting for TLS negotiation to complete
+	// 表示正在等待TLS协商完成
 	kStartingWriteTLS              = 1 << 12,  // If set, we're waiting for TLS negotiation to complete
+	// 表示正在使用SSL/TLS加密通信
 	kSocketSecure                  = 1 << 13,  // If set, socket is using secure communication via SSL/TLS
+	// 表示从socket读到了文件终止符
 	kSocketHasReadEOF              = 1 << 14,  // If set, we have read EOF from socket
+	// 表示读到了文件终止符且预缓冲区已经都读取完了
 	kReadStreamClosed              = 1 << 15,  // If set, we've read EOF plus prebuffer has been drained
+	// 表示socket正在被销毁
 	kDealloc                       = 1 << 16,  // If set, the socket is being deallocated
 #if TARGET_OS_IPHONE
+// 表示流已经被加到了监听线程
 	kAddedStreamsToRunLoop         = 1 << 17,  // If set, CFStreams have been added to listener thread
+	// 表示强制使用CFStream来代替加密传输
 	kUsingCFStreamForTLS           = 1 << 18,  // If set, we're forced to use CFStream instead of SecureTransport
+	// 表示读流提示有字节可用
 	kSecureSocketHasBytesAvailable = 1 << 19,  // If set, CFReadStream has notified us of bytes available
 #endif
 };
-
+// socket设置
 enum GCDAsyncSocketConfig
 {
+// 不允许IPv4
 	kIPv4Disabled              = 1 << 0,  // If set, IPv4 is disabled
+	// 不允许IPv6
 	kIPv6Disabled              = 1 << 1,  // If set, IPv6 is disabled
+	// 优先用IPv6
 	kPreferIPv6                = 1 << 2,  // If set, IPv6 is preferred over IPv4
+	// 如果设置，socket会保持打开，哪怕读流关闭
 	kAllowHalfDuplexConnection = 1 << 3,  // If set, the socket will stay open even if the read stream closes
 };
 
+// CFStream使用的属性
 #if TARGET_OS_IPHONE
   static NSThread *cfstreamThread;  // Used for CFStreams
 
@@ -193,33 +222,36 @@ enum GCDAsyncSocketConfig
  * 
  * The current design is very simple and straight-forward, while also keeping memory requirements lower.
 **/
-
+// 预缓冲区对象，每次从socket取出全部数据呀，然后一次次读，从而避免多次的系统调用
 @interface GCDAsyncSocketPreBuffer : NSObject
 {
-	uint8_t *preBuffer;
-	size_t preBufferSize;
+	uint8_t *preBuffer;// 缓冲区
+	size_t preBufferSize;// 缓冲区大小
 	
-	uint8_t *readPointer;
-	uint8_t *writePointer;
+	uint8_t *readPointer;// 读指针
+	uint8_t *writePointer;// 写指针
 }
-
+// 根据大小初始化
 - (instancetype)initWithCapacity:(size_t)numBytes NS_DESIGNATED_INITIALIZER;
-
+// 确保写区大小
 - (void)ensureCapacityForWrite:(size_t)numBytes;
-
+// 可用字节
 - (size_t)availableBytes;
+// 读缓存
 - (uint8_t *)readBuffer;
-
+// 获取读指针和可读大小
 - (void)getReadBuffer:(uint8_t **)bufferPtr availableBytes:(size_t *)availableBytesPtr;
-
+// 获取可写大小
 - (size_t)availableSpace;
+// 获取写指针
 - (uint8_t *)writeBuffer;
-
+// 获取写指针和可写大小
 - (void)getWriteBuffer:(uint8_t **)bufferPtr availableSpace:(size_t *)availableSpacePtr;
-
+// 移动读指针
 - (void)didRead:(size_t)bytesRead;
+// 移动写指针
 - (void)didWrite:(size_t)bytesWritten;
-
+// 重置读写指针
 - (void)reset;
 
 @end
@@ -232,7 +264,7 @@ enum GCDAsyncSocketConfig
 	NSAssert(0, @"Use the designated initializer");
 	return nil;
 }
-
+// 根据大小为缓冲区分配内存，并设置读写指针
 - (instancetype)initWithCapacity:(size_t)numBytes
 {
 	if ((self = [super init]))
@@ -245,17 +277,18 @@ enum GCDAsyncSocketConfig
 	}
 	return self;
 }
-
+// 释放缓冲区内存
 - (void)dealloc
 {
 	if (preBuffer)
 		free(preBuffer);
 }
-
+// 确保剩余可写空间的大小
 - (void)ensureCapacityForWrite:(size_t)numBytes
 {
+// 获取可用空间
 	size_t availableSpace = [self availableSpace];
-	
+	// 如果需要确保的大小大于可用空间，则在原地址的基础上扩大一段新的空间（realloc），并根据原先的读写offset重新设置读写指针的位置
 	if (numBytes > availableSpace)
 	{
 		size_t additionalBytes = numBytes - availableSpace;
@@ -273,23 +306,23 @@ enum GCDAsyncSocketConfig
 		writePointer = preBuffer + writePointerOffset;
 	}
 }
-
+// 可读字节=写指针-读指针
 - (size_t)availableBytes
 {
 	return writePointer - readPointer;
 }
-
+// 获取读指针
 - (uint8_t *)readBuffer
 {
 	return readPointer;
 }
-
+// 获取读指针和可读字节
 - (void)getReadBuffer:(uint8_t **)bufferPtr availableBytes:(size_t *)availableBytesPtr
 {
 	if (bufferPtr) *bufferPtr = readPointer;
 	if (availableBytesPtr) *availableBytesPtr = [self availableBytes];
 }
-
+// 移动读指针，如果与写指针相遇，则说明缓冲区读完，重置读写指针
 - (void)didRead:(size_t)bytesRead
 {
 	readPointer += bytesRead;
@@ -301,28 +334,28 @@ enum GCDAsyncSocketConfig
 		writePointer = preBuffer;
 	}
 }
-
+// 可用空间=总大小-写指针大小
 - (size_t)availableSpace
 {
 	return preBufferSize - (writePointer - preBuffer);
 }
-
+// 获取写指针
 - (uint8_t *)writeBuffer
 {
 	return writePointer;
 }
-
+// 获取写指针和可写空间大小
 - (void)getWriteBuffer:(uint8_t **)bufferPtr availableSpace:(size_t *)availableSpacePtr
 {
 	if (bufferPtr) *bufferPtr = writePointer;
 	if (availableSpacePtr) *availableSpacePtr = [self availableSpace];
 }
-
-- (void)didWrite:(size_t)bytesWritten
+// 移动写指针
+- (void)	didWrite:(size_t)bytesWritten
 {
 	writePointer += bytesWritten;
 }
-
+// 重置读写指针
 - (void)reset
 {
 	readPointer  = preBuffer;
@@ -342,20 +375,22 @@ enum GCDAsyncSocketConfig
  *  - reading to a certain separator
  *  - or simply reading the first chunk of available data
 **/
+// 包含了一系列读指令的对象
 @interface GCDAsyncReadPacket : NSObject
 {
   @public
-	NSMutableData *buffer;
-	NSUInteger startOffset;
-	NSUInteger bytesDone;
-	NSUInteger maxLength;
-	NSTimeInterval timeout;
-	NSUInteger readLength;
-	NSData *term;
+	NSMutableData *buffer;// 数据的指针
+	NSUInteger startOffset;// 起始点偏移量
+	NSUInteger bytesDone;// 读完的字节数
+	NSUInteger maxLength;// 最大长度
+	NSTimeInterval timeout;// 超时时长
+	NSUInteger readLength;// 读取的长度
+	NSData *term;// 终结符
 	BOOL bufferOwner;
 	NSUInteger originalBufferLength;
 	long tag;
 }
+// 初始化方法
 - (instancetype)initWithData:(NSMutableData *)d
                  startOffset:(NSUInteger)s
                    maxLength:(NSUInteger)m
@@ -363,15 +398,17 @@ enum GCDAsyncSocketConfig
                   readLength:(NSUInteger)l
                   terminator:(NSData *)e
                          tag:(long)i NS_DESIGNATED_INITIALIZER;
-
+// 确保额外数据长度
 - (void)ensureCapacityForAdditionalDataOfLength:(NSUInteger)bytesToRead;
-
+// 传入一个默认的读取长度，获取最优的读取长度，并通过指针返回是否需要预缓冲区
 - (NSUInteger)optimalReadLengthWithDefault:(NSUInteger)defaultValue shouldPreBuffer:(BOOL *)shouldPreBufferPtr;
-
+// 针对没有终止符的数据计算出合适的读取长度
 - (NSUInteger)readLengthForNonTermWithHint:(NSUInteger)bytesAvailable;
+// 针对带有终结符的数据计算出最合适的读取长度，并返回是否需要预缓冲区
 - (NSUInteger)readLengthForTermWithHint:(NSUInteger)bytesAvailable shouldPreBuffer:(BOOL *)shouldPreBufferPtr;
+// 算出从预缓冲区读取的数据长度，不超过最大长度，读到指定的终止符也会停止读取
 - (NSUInteger)readLengthForTermWithPreBuffer:(GCDAsyncSocketPreBuffer *)preBuffer found:(BOOL *)foundPtr;
-
+// 在预缓冲区指定numBytes后寻找终结符，并将超出终结符的长度返回
 - (NSInteger)searchForTermAfterPreBuffering:(ssize_t)numBytes;
 
 @end
@@ -379,12 +416,13 @@ enum GCDAsyncSocketConfig
 @implementation GCDAsyncReadPacket
 
 // Cover the superclass' designated initializer
+// 初始化方法（废弃）
 - (instancetype)init NS_UNAVAILABLE
 {
 	NSAssert(0, @"Use the designated initializer");
 	return nil;
 }
-
+// 初始化方法，创建或持有一个存储读入数据的data
 - (instancetype)initWithData:(NSMutableData *)d
                  startOffset:(NSUInteger)s
                    maxLength:(NSUInteger)m
@@ -401,19 +439,21 @@ enum GCDAsyncSocketConfig
 		readLength = l;
 		term = [e copy];
 		tag = i;
-		
+		// 如果有data，则根据传入的参数设置成员变量
 		if (d)
 		{
 			buffer = d;
 			startOffset = s;
 			bufferOwner = NO;
 			originalBufferLength = [d length];
-		}
+		}		
 		else
 		{
+		// 如果没data，则根据readlength的值创建一段对应长度的data
 			if (readLength > 0)
 				buffer = [[NSMutableData alloc] initWithLength:readLength];
 			else
+			// 如果readlength长度不大于0，则创建一段长度为0的data，并设置bufferOwner为yes
 				buffer = [[NSMutableData alloc] initWithLength:0];
 			
 			startOffset = 0;
@@ -427,15 +467,17 @@ enum GCDAsyncSocketConfig
 /**
  * Increases the length of the buffer (if needed) to ensure a read of the given size will fit.
 **/
+// 确保data拥有足够的长度来继续写入对应的数据，如果不够则扩大
 - (void)ensureCapacityForAdditionalDataOfLength:(NSUInteger)bytesToRead
 {
 	NSUInteger buffSize = [buffer length];
 	NSUInteger buffUsed = startOffset + bytesDone;
-	
+	// 算出buffer的剩余空间
 	NSUInteger buffSpace = buffSize - buffUsed;
 	
 	if (bytesToRead > buffSpace)
 	{
+	// 如果空间不够则扩充
 		NSUInteger buffInc = bytesToRead - buffSpace;
 		
 		[buffer increaseLengthBy:buffInc];
@@ -449,6 +491,7 @@ enum GCDAsyncSocketConfig
  * Furthermore, the shouldPreBuffer decision is based upon the packet type,
  * and whether the returned value would fit in the current buffer without requiring a resize of the buffer.
 **/
+// 返回最合适的读取长度，并返回是否需要使用预缓冲区
 - (NSUInteger)optimalReadLengthWithDefault:(NSUInteger)defaultValue shouldPreBuffer:(BOOL *)shouldPreBufferPtr
 {
 	NSUInteger result;
@@ -456,12 +499,13 @@ enum GCDAsyncSocketConfig
 	if (readLength > 0)
 	{
 		// Read a specific length of data
+		// 如果读取长度有值，则算出剩余长度作为结果
 		result = readLength - bytesDone;
 		
 		// There is no need to prebuffer since we know exactly how much data we need to read.
 		// Even if the buffer isn't currently big enough to fit this amount of data,
 		// it would have to be resized eventually anyway.
-		
+		// 设置不需要预缓冲区，因为已经知道确切的总数据长度，即使缓冲区大小不够，后续也会有合适的时机去扩充
 		if (shouldPreBufferPtr)
 			*shouldPreBufferPtr = NO;
 	}
@@ -474,10 +518,12 @@ enum GCDAsyncSocketConfig
 		// 
 		// - readDataToData packet
 		// - readDataWithTimeout packet
-		
+		// 如果读取长度没有值
 		if (maxLength > 0)
+		// 如果有最大长度，则根据最大长度算出剩余长度
 			result =  MIN(defaultValue, (maxLength - bytesDone));
 		else
+		// 如果也没有最大长度，则取传入的默认长度
 			result = defaultValue;
 		
 		// Since we don't know the size of the read in advance,
@@ -486,9 +532,9 @@ enum GCDAsyncSocketConfig
 		// 
 		// This is because, in all likelyhood, the amount read from the socket will be less than the default value.
 		// Thus we should avoid over-allocating the read buffer when we can simply use the pre-buffer instead.
-		
 		if (shouldPreBufferPtr)
 		{
+		// 如果现在的缓冲区大小已经满足容纳接下来要读取的数据长度，则不需要预缓冲区，否则需要
 			NSUInteger buffSize = [buffer length];
 			NSUInteger buffUsed = startOffset + bytesDone;
 			
@@ -513,6 +559,7 @@ enum GCDAsyncSocketConfig
  * 
  * The given hint MUST be greater than zero.
 **/
+// 针对没有终止符的数据计算出合适的读取长度
 - (NSUInteger)readLengthForNonTermWithHint:(NSUInteger)bytesAvailable
 {
 	NSAssert(term == nil, @"This method does not apply to term reads");
@@ -521,7 +568,7 @@ enum GCDAsyncSocketConfig
 	if (readLength > 0)
 	{
 		// Read a specific length of data
-		
+		// 如果有读取长度，则根据剩余长度和预估的数据长度取个最小值
 		return MIN(bytesAvailable, (readLength - bytesDone));
 		
 		// No need to avoid resizing the buffer.
@@ -535,9 +582,8 @@ enum GCDAsyncSocketConfig
 	else
 	{
 		// Read all available data
-		
 		NSUInteger result = bytesAvailable;
-		
+		// 如果有最大长度，则取剩余长度和预估长度的最小值，否则直接取预估长度
 		if (maxLength > 0)
 		{
 			result = MIN(result, (maxLength - bytesDone));
@@ -566,6 +612,7 @@ enum GCDAsyncSocketConfig
  * the shouldPreBuffer boolean value will indicate if the data should be read into a prebuffer first,
  * or if the data can be read directly into the read packet's buffer.
 **/
+// 针对带有终结符的数据计算出最合适的读取长度，并返回是否需要预缓冲区
 - (NSUInteger)readLengthForTermWithHint:(NSUInteger)bytesAvailable shouldPreBuffer:(BOOL *)shouldPreBufferPtr
 {
 	NSAssert(term != nil, @"This method does not apply to non-term reads");
@@ -573,7 +620,7 @@ enum GCDAsyncSocketConfig
 	
 	
 	NSUInteger result = bytesAvailable;
-	
+	// 如果有最大长度，则取剩余长度和预估长度的最小值
 	if (maxLength > 0)
 	{
 		result = MIN(result, (maxLength - bytesDone));
@@ -618,7 +665,7 @@ enum GCDAsyncSocketConfig
 	// 
 	// If we can read all the data directly into the packet's buffer without resizing it first,
 	// then we do so. Otherwise we use the prebuffer.
-	
+	// 如果剩余空间比读的数据大，则不使用预缓冲区，否则使用
 	if (shouldPreBufferPtr)
 	{
 		NSUInteger buffSize = [buffer length];
@@ -640,6 +687,7 @@ enum GCDAsyncSocketConfig
  * 
  * It is assumed the terminator has not already been read.
 **/
+// 算出从预缓冲区读取的数据长度，不超过最大长度，读到指定的终止符也会停止读取
 - (NSUInteger)readLengthForTermWithPreBuffer:(GCDAsyncSocketPreBuffer *)preBuffer found:(BOOL *)foundPtr
 {
 	NSAssert(term != nil, @"This method does not apply to non-term reads");
@@ -687,29 +735,34 @@ enum GCDAsyncSocketConfig
 	
 	if ((bytesDone + preBufferLength) < termLength)
 	{
+	// 如果已经读取的部分加上预缓冲区剩余的部分总长度还比终止符短，那么就返回预缓冲区剩余的长度，因为此时不会存在终止符
 		// Not enough data for a full term sequence yet
 		return preBufferLength;
 	}
 	
 	NSUInteger maxPreBufferLength;
 	if (maxLength > 0) {
+	// 如果最大长度有值，那么算出最大的预缓冲长度为剩余长度与预缓冲区可用长度的最小值
 		maxPreBufferLength = MIN(preBufferLength, (maxLength - bytesDone));
 		
 		// Note: maxLength >= termLength
 	}
 	else {
+	// 如果最大长度没值，则最大的预缓冲区长度为预缓冲区可用长度
 		maxPreBufferLength = preBufferLength;
 	}
-	
+	// 声明一个存放匹配字符串的数组
 	uint8_t seq[termLength];
 	const void *termBuf = [term bytes];
-	
+	// bufLen为当前准备匹配对比是否为终结符一部分的字符串长度。因为终结符不会完整出现在已经读取的数据中，所以最长只会是termLength-1，如果已读的字节不够长，则取已读的字节数
 	NSUInteger bufLen = MIN(bytesDone, (termLength - 1));
+	// 获取需要比对指针，指向需要比对的第一位
 	uint8_t *buf = (uint8_t *)[buffer mutableBytes] + startOffset + bytesDone - bufLen;
-	
+	// preLen为匹配可能存在的终结符还需要读取的长度
 	NSUInteger preLen = termLength - bufLen;
+	// 获取读指针
 	const uint8_t *pre = [preBuffer readBuffer];
-	
+	// loopCount为对比到末尾需要的次数
 	NSUInteger loopCount = bufLen + maxPreBufferLength - termLength + 1; // Plus one. See example above.
 	
 	NSUInteger result = maxPreBufferLength;
@@ -717,20 +770,23 @@ enum GCDAsyncSocketConfig
 	NSUInteger i;
 	for (i = 0; i < loopCount; i++)
 	{
+	// 依次对比
 		if (bufLen > 0)
 		{
+		// 如果当前准备匹配的字节数不为0，则将对应长度的字节拷贝到seq中，再将预缓冲区中一部分字节拷贝到seq中，凑出一个与终结符长度相符合的字符串
 			// Combining bytes from buffer and preBuffer
 			
 			memcpy(seq, buf, bufLen);
 			memcpy(seq + bufLen, pre, preLen);
-			
+			// 进行比较
 			if (memcmp(seq, termBuf, termLength) == 0)
 			{
+			// 设置要读取的长度为preLen，并标记找到了终结符
 				result = preLen;
 				found = YES;
 				break;
 			}
-			
+			// 不相等，往后移动
 			buf++;
 			bufLen--;
 			preLen++;
@@ -738,22 +794,23 @@ enum GCDAsyncSocketConfig
 		else
 		{
 			// Comparing directly from preBuffer
-			
+			// 当前准备匹配的字节数为0，则直接从预缓冲区开始对比
 			if (memcmp(pre, termBuf, termLength) == 0)
 			{
+			// 对比吻合，算出在缓冲区中指针移动了多少
 				NSUInteger preOffset = pre - [preBuffer readBuffer]; // pointer arithmetic
-				
+				// 设置要读取的数量为指针移动的数量加上终结符的长度，并标记找到
 				result = preOffset + termLength;
 				found = YES;
 				break;
 			}
-			
+			// 不吻合，往后继续对比
 			pre++;
 		}
 	}
 	
 	// There is no need to avoid resizing the buffer in this particular situation.
-	
+	// 返回结果与是否找到终结符
 	if (foundPtr) *foundPtr = found;
 	return result;
 }
@@ -771,33 +828,35 @@ enum GCDAsyncSocketConfig
  * The given number of bytes have been added to the end of our buffer.
  * Our bytesDone variable has NOT been changed due to the prebuffered bytes.
 **/
+// 在预缓冲区指定numBytes后寻找终结符，并将超出终结符的长度返回
 - (NSInteger)searchForTermAfterPreBuffering:(ssize_t)numBytes
 {
 	NSAssert(term != nil, @"This method does not apply to non-term reads");
 	
 	// The implementation of this method is very similar to the above method.
 	// See the above method for a discussion of the algorithm used here.
-	
+	// 获取buffer指针和起始位置前的长度
 	uint8_t *buff = [buffer mutableBytes];
 	NSUInteger buffLength = bytesDone + numBytes;
-	
+	// 获取终结符指针和终结符长度
 	const void *termBuff = [term bytes];
 	NSUInteger termLength = [term length];
 	
 	// Note: We are dealing with unsigned integers,
 	// so make sure the math doesn't go below zero.
-	
+	// 获取对比起始位置
 	NSUInteger i = ((buffLength - numBytes) >= termLength) ? (buffLength - numBytes - termLength + 1) : 0;
 	
 	while (i + termLength <= buffLength)
 	{
 		uint8_t *subBuffer = buff + startOffset + i;
-		
+		// 对比
 		if (memcmp(subBuffer, termBuff, termLength) == 0)
 		{
+		// 如果找到了终结符，则返回剩余长度
 			return buffLength - (i + termLength);
 		}
-		
+		// 没找到，移动指针继续找
 		i++;
 	}
 	
@@ -814,14 +873,16 @@ enum GCDAsyncSocketConfig
 /**
  * The GCDAsyncWritePacket encompasses the instructions for any given write.
 **/
+// 写包
 @interface GCDAsyncWritePacket : NSObject
 {
   @public
-	NSData *buffer;
-	NSUInteger bytesDone;
+	NSData *buffer; // 数据
+	NSUInteger bytesDone; // 已读的字节
 	long tag;
 	NSTimeInterval timeout;
 }
+// 初始化法方法
 - (instancetype)initWithData:(NSData *)d timeout:(NSTimeInterval)t tag:(long)i NS_DESIGNATED_INITIALIZER;
 @end
 
@@ -833,7 +894,7 @@ enum GCDAsyncSocketConfig
 	NSAssert(0, @"Use the designated initializer");
 	return nil;
 }
-
+// 初始化属性
 - (instancetype)initWithData:(NSData *)d timeout:(NSTimeInterval)t tag:(long)i
 {
 	if((self = [super init]))
@@ -857,11 +918,13 @@ enum GCDAsyncSocketConfig
  * The GCDAsyncSpecialPacket encompasses special instructions for interruptions in the read/write queues.
  * This class my be altered to support more than just TLS in the future.
 **/
+// 特殊包，用于特殊的指令
 @interface GCDAsyncSpecialPacket : NSObject
 {
   @public
-	NSDictionary *tlsSettings;
+	NSDictionary *tlsSettings;// tls设置
 }
+// 初始化方法
 - (instancetype)initWithTLSSettings:(NSDictionary <NSString*,NSObject*>*)settings NS_DESIGNATED_INITIALIZER;
 @end
 
@@ -873,7 +936,7 @@ enum GCDAsyncSocketConfig
 	NSAssert(0, @"Use the designated initializer");
 	return nil;
 }
-
+// 初始化属性
 - (instancetype)initWithTLSSettings:(NSDictionary <NSString*,NSObject*>*)settings
 {
 	if((self = [super init]))
@@ -892,23 +955,23 @@ enum GCDAsyncSocketConfig
 
 @implementation GCDAsyncSocket
 {
-	uint32_t flags;
-	uint16_t config;
+	uint32_t flags;// 状态标记
+	uint16_t config;// 设置
 	// 代理对象
 	__weak id<GCDAsyncSocketDelegate> delegate;
 	// 代理方法执行的队列
 	dispatch_queue_t delegateQueue;
 	
-	int socket4FD;
-	int socket6FD;
-	int socketUN;
-	NSURL *socketUrl;
-	int stateIndex;
+	int socket4FD;// ipv4的socket
+	int socket6FD;// ipv6的socket
+	int socketUN;// unix域的socket
+	NSURL *socketUrl;// socket的地址
+	int stateIndex;// 标识本次连接的索引
 	NSData * connectInterface4;
 	NSData * connectInterface6;
 	NSData * connectInterfaceUN;
 	
-	dispatch_queue_t socketQueue;
+	dispatch_queue_t socketQueue;// socket的队列
 	
 	dispatch_source_t accept4Source;
 	dispatch_source_t accept6Source;
@@ -919,20 +982,20 @@ enum GCDAsyncSocketConfig
 	dispatch_source_t readTimer;
 	dispatch_source_t writeTimer;
 	
-	NSMutableArray *readQueue;
-	NSMutableArray *writeQueue;
+	NSMutableArray *readQueue;// 读队列
+	NSMutableArray *writeQueue;// 写队列
 	
-	GCDAsyncReadPacket *currentRead;
-	GCDAsyncWritePacket *currentWrite;
+	GCDAsyncReadPacket *currentRead;// 当前的读包
+	GCDAsyncWritePacket *currentWrite;// 当前的写包
 	
 	unsigned long socketFDBytesAvailable;
 	
-	GCDAsyncSocketPreBuffer *preBuffer;
+	GCDAsyncSocketPreBuffer *preBuffer;// 预缓冲区
 		
 #if TARGET_OS_IPHONE
 	CFStreamClientContext streamContext;
-	CFReadStreamRef readStream;
-	CFWriteStreamRef writeStream;
+	CFReadStreamRef readStream;// 读流
+	CFWriteStreamRef writeStream;// 写流
 #endif
 	SSLContextRef sslContext;
 	GCDAsyncSocketPreBuffer *sslPreBuffer;
@@ -945,22 +1008,22 @@ enum GCDAsyncSocketConfig
 	id userData;
     NSTimeInterval alternateAddressDelay;
 }
-
+// 初始化，不设置代理对象、socket队列
 - (instancetype)init
 {
 	return [self initWithDelegate:nil delegateQueue:NULL socketQueue:NULL];
 }
-
+// 初始化，设置socket队列
 - (instancetype)initWithSocketQueue:(dispatch_queue_t)sq
 {
 	return [self initWithDelegate:nil delegateQueue:NULL socketQueue:sq];
 }
-
+// 初始化，设置代理对象和代理队列
 - (instancetype)initWithDelegate:(id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(dispatch_queue_t)dq
 {
 	return [self initWithDelegate:aDelegate delegateQueue:dq socketQueue:NULL];
 }
-
+// 初始化方法，设置代理对象、代理执行的队列和socket队列
 - (instancetype)initWithDelegate:(id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(dispatch_queue_t)dq socketQueue:(dispatch_queue_t)sq
 {
 	if((self = [super init]))
@@ -1031,39 +1094,42 @@ enum GCDAsyncSocketConfig
 		writeQueue = [[NSMutableArray alloc] initWithCapacity:5];
 		currentWrite = nil;
 		
-		// 初始化缓冲区
+		// 初始化预缓冲区
 		preBuffer = [[GCDAsyncSocketPreBuffer alloc] initWithCapacity:(1024 * 4)];
         alternateAddressDelay = 0.3;
 	}
 	return self;
 }
-
+// 销毁方法
 - (void)dealloc
 {
 	LogInfo(@"%@ - %@ (start)", THIS_METHOD, self);
 	
 	// Set dealloc flag.
 	// This is used by closeWithError to ensure we don't accidentally retain ourself.
+	// 标记销毁，防止自身此时被意外持有
 	flags |= kDealloc;
 	
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
 	{
+	// 如果当前队列是最初设置的socket队列，则调用关闭连接
 		[self closeWithError:nil];
 	}
 	else
 	{
+	// 如果不是，则同步到socket队列上，调用关闭连接
 		dispatch_sync(socketQueue, ^{
 			[self closeWithError:nil];
 		});
 	}
-	
+	// 清空代理对象
 	delegate = nil;
-	
+	// 清空代理队列，释放
 	#if !OS_OBJECT_USE_OBJC
 	if (delegateQueue) dispatch_release(delegateQueue);
 	#endif
 	delegateQueue = NULL;
-	
+	// 清空socket队列，释放
 	#if !OS_OBJECT_USE_OBJC
 	if (socketQueue) dispatch_release(socketQueue);
 	#endif
@@ -1073,28 +1139,30 @@ enum GCDAsyncSocketConfig
 }
 
 #pragma mark -
-
+// 根据已创建的socket文件描述符初始化，并指定socket队列
 + (nullable instancetype)socketFromConnectedSocketFD:(int)socketFD socketQueue:(nullable dispatch_queue_t)sq error:(NSError**)error {
   return [self socketFromConnectedSocketFD:socketFD delegate:nil delegateQueue:NULL socketQueue:sq error:error];
 }
-
+// 根据已创建的socket文件描述符初始化，并指定代理对象和代理队列
 + (nullable instancetype)socketFromConnectedSocketFD:(int)socketFD delegate:(nullable id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(nullable dispatch_queue_t)dq error:(NSError**)error {
   return [self socketFromConnectedSocketFD:socketFD delegate:aDelegate delegateQueue:dq socketQueue:NULL error:error];
 }
-
+// 根据已创建的socket文件描述符初始化，并指定socket队列、代理对象、代理队列
 + (nullable instancetype)socketFromConnectedSocketFD:(int)socketFD delegate:(nullable id<GCDAsyncSocketDelegate>)aDelegate delegateQueue:(nullable dispatch_queue_t)dq socketQueue:(nullable dispatch_queue_t)sq error:(NSError* __autoreleasing *)error
 {
   __block BOOL errorOccured = NO;
   __block NSError *thisError = nil;
-  
+  // 先根据指定的队列和代理对象创建一个实例
   GCDAsyncSocket *socket = [[[self class] alloc] initWithDelegate:aDelegate delegateQueue:dq socketQueue:sq];
-  
+  // 同步到socket队列，并使用自动释放池来读取socket文件描述符
   dispatch_sync(socket->socketQueue, ^{ @autoreleasepool {
+  // 通过socket文件描述符获取socket连接对象的地址
     struct sockaddr addr;
     socklen_t addr_size = sizeof(struct sockaddr);
-    int retVal = getpeername(socketFD, (struct sockaddr *)&addr, &addr_size);
+    int retVal = getpeername(socketFD, (struct sockaddr *)&addr, &addr_size); 
     if (retVal)
     {
+    // 如果失败了，则创建一个错误对象，并返回
       NSString *errMsg = NSLocalizedStringWithDefaultValue(@"GCDAsyncSocketOtherError",
                                                            @"GCDAsyncSocket", [NSBundle mainBundle],
                                                            @"Attempt to create socket from socket FD failed. getpeername() failed", nil);
@@ -1105,7 +1173,7 @@ enum GCDAsyncSocketConfig
       thisError = [NSError errorWithDomain:GCDAsyncSocketErrorDomain code:GCDAsyncSocketOtherError userInfo:userInfo];
       return;
     }
-    
+    // 判断地址属于ipv4还是ipv6，并设置给对应的成员变量
     if (addr.sa_family == AF_INET)
     {
       socket->socket4FD = socketFD;
@@ -1116,6 +1184,7 @@ enum GCDAsyncSocketConfig
     }
     else
     {
+    // 不属于ipv4和ipv6的地址，则报错并返回错误对象
       NSString *errMsg = NSLocalizedStringWithDefaultValue(@"GCDAsyncSocketOtherError",
                                                            @"GCDAsyncSocket", [NSBundle mainBundle],
                                                            @"Attempt to create socket from socket FD failed. socket FD is neither IPv4 nor IPv6", nil);
@@ -1126,8 +1195,9 @@ enum GCDAsyncSocketConfig
       thisError = [NSError errorWithDomain:GCDAsyncSocketErrorDomain code:GCDAsyncSocketOtherError userInfo:userInfo];
       return;
     }
-    
+    // 标记为开始状态
     socket->flags = kSocketStarted;
+    // 处理socket连接成功后的事情，例如打开读写流等
     [socket didConnect:socket->stateIndex];
   }});
   
@@ -1141,7 +1211,7 @@ enum GCDAsyncSocketConfig
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Configuration
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+// 从socket队列获取代理对象
 - (id)delegate
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -1159,7 +1229,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列设置代理对象，可以选择同步或异步
 - (void)setDelegate:(id)newDelegate synchronously:(BOOL)synchronously
 {
 	dispatch_block_t block = ^{
@@ -1176,17 +1246,17 @@ enum GCDAsyncSocketConfig
 			dispatch_async(socketQueue, block);
 	}
 }
-
+// 在socket队列设置代理对象，默认异步
 - (void)setDelegate:(id<GCDAsyncSocketDelegate>)newDelegate
 {
 	[self setDelegate:newDelegate synchronously:NO];
 }
-
+// 在socket队列同步设置代理对象
 - (void)synchronouslySetDelegate:(id<GCDAsyncSocketDelegate>)newDelegate
 {
 	[self setDelegate:newDelegate synchronously:YES];
 }
-
+// 在socket队列获取代理队列
 - (dispatch_queue_t)delegateQueue
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -1204,7 +1274,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列设置代理队列，可选择同步或异步
 - (void)setDelegateQueue:(dispatch_queue_t)newDelegateQueue synchronously:(BOOL)synchronously
 {
 	dispatch_block_t block = ^{
@@ -1227,17 +1297,17 @@ enum GCDAsyncSocketConfig
 			dispatch_async(socketQueue, block);
 	}
 }
-
+// 在socket队列异步设置代理队列
 - (void)setDelegateQueue:(dispatch_queue_t)newDelegateQueue
 {
 	[self setDelegateQueue:newDelegateQueue synchronously:NO];
 }
-
+// 在socket队列同步设置代理队列
 - (void)synchronouslySetDelegateQueue:(dispatch_queue_t)newDelegateQueue
 {
 	[self setDelegateQueue:newDelegateQueue synchronously:YES];
 }
-
+// 在socket队列同时获取代理对象和代理队列
 - (void)getDelegate:(id<GCDAsyncSocketDelegate> *)delegatePtr delegateQueue:(dispatch_queue_t *)delegateQueuePtr
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -1259,7 +1329,7 @@ enum GCDAsyncSocketConfig
 		if (delegateQueuePtr) *delegateQueuePtr = dqPtr;
 	}
 }
-
+// 在socket队列上同时设置代理对象和代理队列，可选择同步或异步
 - (void)setDelegate:(id)newDelegate delegateQueue:(dispatch_queue_t)newDelegateQueue synchronously:(BOOL)synchronously
 {
 	dispatch_block_t block = ^{
@@ -1284,17 +1354,17 @@ enum GCDAsyncSocketConfig
 			dispatch_async(socketQueue, block);
 	}
 }
-
+// 在socket队列同时设置代理对象，异步
 - (void)setDelegate:(id<GCDAsyncSocketDelegate>)newDelegate delegateQueue:(dispatch_queue_t)newDelegateQueue
 {
 	[self setDelegate:newDelegate delegateQueue:newDelegateQueue synchronously:NO];
 }
-
+// 在socket队列同步设置代理对象，同步
 - (void)synchronouslySetDelegate:(id<GCDAsyncSocketDelegate>)newDelegate delegateQueue:(dispatch_queue_t)newDelegateQueue
 {
 	[self setDelegate:newDelegate delegateQueue:newDelegateQueue synchronously:YES];
 }
-
+// 在socket队列上获取IPv4是否可用
 - (BOOL)isIPv4Enabled
 {
 	// Note: YES means kIPv4Disabled is OFF
@@ -1314,7 +1384,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列上设置IPv4的可用性
 - (void)setIPv4Enabled:(BOOL)flag
 {
 	// Note: YES means kIPv4Disabled is OFF
@@ -1332,7 +1402,7 @@ enum GCDAsyncSocketConfig
 	else
 		dispatch_async(socketQueue, block);
 }
-
+// 在socket队列获取IPv6是否可用
 - (BOOL)isIPv6Enabled
 {
 	// Note: YES means kIPv6Disabled is OFF
@@ -1352,7 +1422,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列上设置IPv6的可用性
 - (void)setIPv6Enabled:(BOOL)flag
 {
 	// Note: YES means kIPv6Disabled is OFF
@@ -1370,7 +1440,7 @@ enum GCDAsyncSocketConfig
 	else
 		dispatch_async(socketQueue, block);
 }
-
+// 在socket队列上获取是否优先IPv4
 - (BOOL)isIPv4PreferredOverIPv6
 {
 	// Note: YES means kPreferIPv6 is OFF
@@ -1390,7 +1460,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列上设置是否优先IPv4
 - (void)setIPv4PreferredOverIPv6:(BOOL)flag
 {
 	// Note: YES means kPreferIPv6 is OFF
@@ -1408,7 +1478,7 @@ enum GCDAsyncSocketConfig
 	else
 		dispatch_async(socketQueue, block);
 }
-
+// 在socket队列上获取连接备用域名的延时
 - (NSTimeInterval) alternateAddressDelay {
     __block NSTimeInterval delay;
     dispatch_block_t block = ^{
@@ -1420,7 +1490,7 @@ enum GCDAsyncSocketConfig
         dispatch_sync(socketQueue, block);
     return delay;
 }
-
+// 在socket队列上设置备用域名的延时
 - (void) setAlternateAddressDelay:(NSTimeInterval)delay {
     dispatch_block_t block = ^{
         self->alternateAddressDelay = delay;
@@ -1430,7 +1500,7 @@ enum GCDAsyncSocketConfig
     else
         dispatch_async(socketQueue, block);
 }
-
+// 在socket队列上获取用户数据
 - (id)userData
 {
 	__block id result = nil;
@@ -1447,7 +1517,7 @@ enum GCDAsyncSocketConfig
 	
 	return result;
 }
-
+// 在socket队列里设置用户数据
 - (void)setUserData:(id)arbitraryUserData
 {
 	dispatch_block_t block = ^{
@@ -1467,7 +1537,7 @@ enum GCDAsyncSocketConfig
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Accepting
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+// 在指定端口等待客户端连接
 - (BOOL)acceptOnPort:(uint16_t)port error:(NSError **)errPtr
 {
 	return [self acceptOnInterface:nil port:port error:errPtr];
@@ -1485,9 +1555,9 @@ enum GCDAsyncSocketConfig
 	
 	// CreateSocket Block
 	// This block will be invoked within the dispatch block below.
-	
+	// 创建socket的block
 	int(^createSocket)(int, NSData*) = ^int (int domain, NSData *interfaceAddr) {
-		
+		// 创建socket文件描述符，基于tcp协议
 		int socketFD = socket(domain, SOCK_STREAM, 0);
 		
 		if (socketFD == SOCKET_NULL)
@@ -1501,7 +1571,7 @@ enum GCDAsyncSocketConfig
 		int status;
 		
 		// Set socket options
-		
+		// 设置为不阻塞
 		status = fcntl(socketFD, F_SETFL, O_NONBLOCK);
 		if (status == -1)
 		{
@@ -1512,7 +1582,7 @@ enum GCDAsyncSocketConfig
 			close(socketFD);
 			return SOCKET_NULL;
 		}
-		
+		// 设置打开地址复用功能，可以允许端口在连接关闭后立即被释放（默认是两分钟会释放）
 		int reuseOn = 1;
 		status = setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuseOn, sizeof(reuseOn));
 		if (status == -1)
@@ -1526,7 +1596,7 @@ enum GCDAsyncSocketConfig
 		}
 		
 		// Bind socket
-		
+		// 绑定socket到指定的地址
 		status = bind(socketFD, (const struct sockaddr *)[interfaceAddr bytes], (socklen_t)[interfaceAddr length]);
 		if (status == -1)
 		{
@@ -1539,7 +1609,7 @@ enum GCDAsyncSocketConfig
 		}
 		
 		// Listen
-		
+		// 开始监听
 		status = listen(socketFD, 1024);
 		if (status == -1)
 		{
@@ -1557,7 +1627,7 @@ enum GCDAsyncSocketConfig
 	// Create dispatch block and run on socketQueue
 	
 	dispatch_block_t block = ^{ @autoreleasepool {
-		
+		// 检查是否有代理对象
         if (self->delegate == nil) // Must have delegate set
 		{
 			NSString *msg = @"Attempting to accept without a delegate. Set a delegate first.";
@@ -1565,7 +1635,7 @@ enum GCDAsyncSocketConfig
 			
 			return_from_block;
 		}
-		
+		// 检查是否设置了代理队列
         if (self->delegateQueue == NULL) // Must have delegate queue set
 		{
 			NSString *msg = @"Attempting to accept without a delegate queue. Set a delegate queue first.";
@@ -1573,10 +1643,10 @@ enum GCDAsyncSocketConfig
 			
 			return_from_block;
 		}
-		
+		// 获取IPv4和IPv6是否可用
         BOOL isIPv4Disabled = (self->config & kIPv4Disabled) ? YES : NO;
         BOOL isIPv6Disabled = (self->config & kIPv6Disabled) ? YES : NO;
-		
+		// 都不可用则报错
 		if (isIPv4Disabled && isIPv6Disabled) // Must have IPv4 or IPv6 enabled
 		{
 			NSString *msg = @"Both IPv4 and IPv6 have been disabled. Must enable at least one protocol first.";
@@ -1584,7 +1654,7 @@ enum GCDAsyncSocketConfig
 			
 			return_from_block;
 		}
-		
+		// 如果没处于断开连接的状态则报错
 		if (![self isDisconnected]) // Must be disconnected
 		{
 			NSString *msg = @"Attempting to accept while connected or accepting connections. Disconnect first.";
@@ -1594,6 +1664,7 @@ enum GCDAsyncSocketConfig
 		}
 		
 		// Clear queues (spurious read/write requests post disconnect)
+		// 清理读写队列
         [self->readQueue removeAllObjects];
         [self->writeQueue removeAllObjects];
 		
@@ -1601,9 +1672,9 @@ enum GCDAsyncSocketConfig
 		
 		NSMutableData *interface4 = nil;
 		NSMutableData *interface6 = nil;
-		
+		// 获取IPv4或IPv6的地址
 		[self getInterfaceAddress4:&interface4 address6:&interface6 fromDescription:interface port:port];
-		
+		// 没获取到则报错
 		if ((interface4 == nil) && (interface6 == nil))
 		{
 			NSString *msg = @"Unknown interface. Specify valid interface by name (e.g. \"en1\") or IP address.";
@@ -1611,7 +1682,7 @@ enum GCDAsyncSocketConfig
 			
 			return_from_block;
 		}
-		
+		// 如果禁用了IPv4但没取到IPv6地址则报错
 		if (isIPv4Disabled && (interface6 == nil))
 		{
 			NSString *msg = @"IPv4 has been disabled and specified interface doesn't support IPv6.";
@@ -1619,7 +1690,7 @@ enum GCDAsyncSocketConfig
 			
 			return_from_block;
 		}
-		
+		// 如果禁用了IPv6但没取到IPv4地址则报错
 		if (isIPv6Disabled && (interface4 == nil))
 		{
 			NSString *msg = @"IPv6 has been disabled and specified interface doesn't support IPv4.";
@@ -1627,12 +1698,12 @@ enum GCDAsyncSocketConfig
 			
 			return_from_block;
 		}
-		
+		// 判断当前IPv4和IPv6是否可用
 		BOOL enableIPv4 = !isIPv4Disabled && (interface4 != nil);
 		BOOL enableIPv6 = !isIPv6Disabled && (interface6 != nil);
 		
 		// Create sockets, configure, bind, and listen
-		
+		// 创建IPv4的socket
 		if (enableIPv4)
 		{
 			LogVerbose(@"Creating IPv4 socket");
@@ -1643,20 +1714,19 @@ enum GCDAsyncSocketConfig
 				return_from_block;
 			}
 		}
-		
+		// 创建IPv6的socket
 		if (enableIPv6)
 		{
 			LogVerbose(@"Creating IPv6 socket");
-			
 			if (enableIPv4 && (port == 0))
 			{
 				// No specific port was specified, so we allowed the OS to pick an available port for us.
 				// Now we need to make sure the IPv6 socket listens on the same port as the IPv4 socket.
-				
+				// 确保端口和IPv4一致
 				struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)[interface6 mutableBytes];
 				addr6->sin6_port = htons([self localPort4]);
 			}
-			
+			// 创建socket
             self->socket6FD = createSocket(AF_INET6, interface6);
 			
             if (self->socket6FD == SOCKET_NULL)
@@ -1673,9 +1743,10 @@ enum GCDAsyncSocketConfig
 		}
 		
 		// Create accept sources
-		
+		// 创建IPv4的源
 		if (enableIPv4)
 		{
+		// 创建读源
             self->accept4Source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, self->socket4FD, 0, self->socketQueue);
 			
             int socketFD = self->socket4FD;
@@ -2006,58 +2077,61 @@ enum GCDAsyncSocketConfig
 	
 	if (parentSocketFD == socket4FD)
 	{
+	// IPv4的情况
 		socketType = 0;
 		
 		struct sockaddr_in addr;
 		socklen_t addrLen = sizeof(addr);
-		
+		// 创建一个用于通信的socketfd
 		childSocketFD = accept(parentSocketFD, (struct sockaddr *)&addr, &addrLen);
-		
+		// 失败则报错
 		if (childSocketFD == -1)
 		{
 			LogWarn(@"Accept failed with error: %@", [self errnoError]);
 			return NO;
 		}
-		
+		// 获取通信对象的地址
 		childSocketAddress = [NSData dataWithBytes:&addr length:addrLen];
 	}
 	else if (parentSocketFD == socket6FD)
 	{
+	// IPv6的情况
 		socketType = 1;
 		
 		struct sockaddr_in6 addr;
 		socklen_t addrLen = sizeof(addr);
-		
+		// 创建一个用于通信的socketFD
 		childSocketFD = accept(parentSocketFD, (struct sockaddr *)&addr, &addrLen);
-		
+		// 失败则报错
 		if (childSocketFD == -1)
 		{
 			LogWarn(@"Accept failed with error: %@", [self errnoError]);
 			return NO;
 		}
-		
+		// 获取通信对象的地址
 		childSocketAddress = [NSData dataWithBytes:&addr length:addrLen];
 	}
 	else // if (parentSocketFD == socketUN)
 	{
+	// UNIX的socket的情况
 		socketType = 2;
 		
 		struct sockaddr_un addr;
 		socklen_t addrLen = sizeof(addr);
-		
+		// 创建一个用于通信的socketFD
 		childSocketFD = accept(parentSocketFD, (struct sockaddr *)&addr, &addrLen);
-		
+		// 失败则容错
 		if (childSocketFD == -1)
 		{
 			LogWarn(@"Accept failed with error: %@", [self errnoError]);
 			return NO;
 		}
-		
+		// 获取通信对象的地址
 		childSocketAddress = [NSData dataWithBytes:&addr length:addrLen];
 	}
 	
 	// Enable non-blocking IO on the socket
-	
+	// 设置不阻塞
 	int result = fcntl(childSocketFD, F_SETFL, O_NONBLOCK);
 	if (result == -1)
 	{
@@ -2977,7 +3051,7 @@ enum GCDAsyncSocketConfig
 	
 	NSAssert(dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey), @"Must be dispatched on socketQueue");
 	
-	
+	// 如果stateindex和当前不一致，则直接返回，说明连接已经被取消
 	if (aStateIndex != stateIndex)
 	{
 		LogInfo(@"Ignoring didConnect, already disconnected");
@@ -2986,13 +3060,14 @@ enum GCDAsyncSocketConfig
 		// That is, socket was disconnected, or connection has already timed out.
 		return;
 	}
-	
+	// 设置已连接的标记
 	flags |= kConnected;
-	
+	// 结束连接计时器
 	[self endConnectTimeout];
 	
 	#if TARGET_OS_IPHONE
 	// The endConnectTimeout method executed above incremented the stateIndex.
+	// 结束连接计时器会导致stateIndex增加，因此重新赋值
 	aStateIndex = stateIndex;
 	#endif
 	
@@ -3004,16 +3079,17 @@ enum GCDAsyncSocketConfig
 	// 
 	// Thus we wait until after the socket:didConnectToHost:port: delegate method has completed.
 	// This gives the delegate time to properly configure the streams if needed.
-	
+	// 有些设置必须要在打开流之前，通过delegate设置，为了保证设置，需要等待didConnectToHost的代理方法走完了再执行打开流
+	// 打开流的第一步，作为block后续调用
 	dispatch_block_t SetupStreamsPart1 = ^{
 		#if TARGET_OS_IPHONE
-		
+		// 创建读写流
 		if (![self createReadAndWriteStream])
 		{
 			[self closeWithError:[self otherError:@"Error creating CFStreams"]];
 			return;
 		}
-		
+		// 注册流的回调
 		if (![self registerForStreamCallbacksIncludingReadWrite:NO])
 		{
 			[self closeWithError:[self otherError:@"Error in CFStreamSetClient"]];
@@ -3022,21 +3098,22 @@ enum GCDAsyncSocketConfig
 		
 		#endif
 	};
+	// 打开流的第二步，作为block后续调用
 	dispatch_block_t SetupStreamsPart2 = ^{
 		#if TARGET_OS_IPHONE
-		
+		// 检测当前要配置的连接是否已经被断开，如果被断开则不处理
         if (aStateIndex != self->stateIndex)
 		{
 			// The socket has been disconnected.
 			return;
 		}
-		
+		// 添加流到runloop中
 		if (![self addStreamsToRunLoop])
 		{
 			[self closeWithError:[self otherError:@"Error in CFStreamScheduleWithRunLoop"]];
 			return;
 		}
-		
+		// 打开流
 		if (![self openStreams])
 		{
 			[self closeWithError:[self otherError:@"Error creating CFStreams"]];
@@ -3047,17 +3124,19 @@ enum GCDAsyncSocketConfig
 	};
 	
 	// Notify delegate
-	
+	// 获取连接的地址
 	NSString *host = [self connectedHost];
 	uint16_t port = [self connectedPort];
 	NSURL *url = [self connectedUrl];
 	
 	__strong id<GCDAsyncSocketDelegate> theDelegate = delegate;
 
+// 先配置第一步
 	if (delegateQueue && host != nil && [theDelegate respondsToSelector:@selector(socket:didConnectToHost:port:)])
 	{
 		SetupStreamsPart1();
 		
+		//先异步到代理队列执行didConnect代理方法，再异步到socket链接执行第二步
 		dispatch_async(delegateQueue, ^{ @autoreleasepool {
 			
 			[theDelegate socket:self didConnectToHost:host port:port];
@@ -3070,12 +3149,15 @@ enum GCDAsyncSocketConfig
 	}
 	else if (delegateQueue && url != nil && [theDelegate respondsToSelector:@selector(socket:didConnectToUrl:)])
 	{
+	// 先配置第一步
 		SetupStreamsPart1();
 		
-		dispatch_async(delegateQueue, ^{ @autoreleasepool {
+		// 异步到代理队列，执行didConnectToUrl
+		
+	dispatch_async(delegateQueue, ^{ @autoreleasepool {
 			
 			[theDelegate socket:self didConnectToUrl:url];
-			
+			// 异步到socket队列，执行第二步
             dispatch_async(self->socketQueue, ^{ @autoreleasepool {
 				
 				SetupStreamsPart2();
@@ -3084,16 +3166,17 @@ enum GCDAsyncSocketConfig
 	}
 	else
 	{
+	// 两个方法都没实现，则依次直接执行两个步骤
 		SetupStreamsPart1();
 		SetupStreamsPart2();
 	}
 		
 	// Get the connected socket
-	
+	// 获取socket文件描述符
 	int socketFD = (socket4FD != SOCKET_NULL) ? socket4FD : (socket6FD != SOCKET_NULL) ? socket6FD : socketUN;
 	
 	// Enable non-blocking IO on the socket
-	
+	// 设置为非阻塞，这样即使文件为空也不会被系统阻塞
 	int result = fcntl(socketFD, F_SETFL, O_NONBLOCK);
 	if (result == -1)
 	{
@@ -3104,7 +3187,7 @@ enum GCDAsyncSocketConfig
 	}
 	
 	// Setup our read/write sources
-	
+	// 设置读写源
 	[self setupReadAndWriteSourcesForNewlyConnectedSocket:socketFD];
 	
 	// Dequeue any pending read/write requests
@@ -3171,11 +3254,11 @@ enum GCDAsyncSocketConfig
 		dispatch_resume(connectTimer);
 	}
 }
-
+// 取消连接的计时器
 - (void)endConnectTimeout
 {
 	LogTrace();
-	
+	// 取消计时器
 	if (connectTimer)
 	{
 		dispatch_source_cancel(connectTimer);
@@ -3187,9 +3270,9 @@ enum GCDAsyncSocketConfig
 	// 
 	// Note: This should be called from close method even if connectTimer is NULL.
 	// This is because one might disconnect a socket prior to a successful connection which had no timeout.
-	
+	// 自增stateIndex，防止异步回调的结果被处理
 	stateIndex++;
-	
+	// 设置连接为空
 	if (connectInterface4)
 	{
 		connectInterface4 = nil;
@@ -4264,6 +4347,7 @@ enum GCDAsyncSocketConfig
 
 - (void)setupReadAndWriteSourcesForNewlyConnectedSocket:(int)socketFD
 {
+// 创建gcd读写源
 	readSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, socketFD, 0, socketQueue);
 	writeSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_WRITE, socketFD, 0, socketQueue);
 	
@@ -4271,6 +4355,7 @@ enum GCDAsyncSocketConfig
 	
 	__weak GCDAsyncSocket *weakSelf = self;
 	
+	// 设置读源的处理句柄
 	dispatch_source_set_event_handler(readSource, ^{ @autoreleasepool {
 	#pragma clang diagnostic push
 	#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -4279,10 +4364,10 @@ enum GCDAsyncSocketConfig
 		if (strongSelf == nil) return_from_block;
 		
 		LogVerbose(@"readEventBlock");
-		
+		// 获取可读取的字节大小
 		strongSelf->socketFDBytesAvailable = dispatch_source_get_data(strongSelf->readSource);
 		LogVerbose(@"socketFDBytesAvailable: %lu", strongSelf->socketFDBytesAvailable);
-		
+		// 处理读取
 		if (strongSelf->socketFDBytesAvailable > 0)
 			[strongSelf doReadData];
 		else
@@ -4291,6 +4376,7 @@ enum GCDAsyncSocketConfig
 	#pragma clang diagnostic pop
 	}});
 	
+	// 设置写源的处理句柄
 	dispatch_source_set_event_handler(writeSource, ^{ @autoreleasepool {
 	#pragma clang diagnostic push
 	#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -4299,7 +4385,7 @@ enum GCDAsyncSocketConfig
 		if (strongSelf == nil) return_from_block;
 		
 		LogVerbose(@"writeEventBlock");
-		
+		// 设置可以接收字节的标记，然后写入
 		strongSelf->flags |= kSocketCanAcceptBytes;
 		[strongSelf doWriteData];
 		
@@ -4315,6 +4401,7 @@ enum GCDAsyncSocketConfig
 	dispatch_source_t theWriteSource = writeSource;
 	#endif
 	
+	// 设置取消读源的处理，会释放读源，并在有必要的时候断开socket
 	dispatch_source_set_cancel_handler(readSource, ^{
 	#pragma clang diagnostic push
 	#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -4335,6 +4422,7 @@ enum GCDAsyncSocketConfig
 	#pragma clang diagnostic pop
 	});
 	
+	// 设置取消写源的处理，会释放写源，并在有必要的时候断开socket
 	dispatch_source_set_cancel_handler(writeSource, ^{
 	#pragma clang diagnostic push
 	#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -4357,13 +4445,13 @@ enum GCDAsyncSocketConfig
 	
 	// We will not be able to read until data arrives.
 	// But we should be able to write immediately.
-	
+	// 设置可读字节为0，并且清除读源暂停的标记，恢复读源
 	socketFDBytesAvailable = 0;
 	flags &= ~kReadSourceSuspended;
 	
 	LogVerbose(@"dispatch_resume(readSource)");
 	dispatch_resume(readSource);
-	
+	// 添加socket可以接收字节的标记，以及写源暂停的标记
 	flags |= kSocketCanAcceptBytes;
 	flags |= kWriteSourceSuspended;
 }
@@ -4656,6 +4744,11 @@ enum GCDAsyncSocketConfig
  * 
  * This method also handles auto-disconnect post read/write completion.
 **/
+/* 尝试读取，被调用的时机：
+1 用户请求了读取
+2 在一个读请求结束后
+3 在socket打开后去处理积压的请求
+*/
 - (void)maybeDequeueRead
 {
 	LogTrace();
@@ -4664,28 +4757,35 @@ enum GCDAsyncSocketConfig
 	// If we're not currently processing a read AND we have an available read stream
 	if ((currentRead == nil) && (flags & kConnected))
 	{
+	// 如果当前没在读，且socket已经连接上
 		if ([readQueue count] > 0)
 		{
+		// 如果当前没在读，且socket已经连接上
 			// Dequeue the next object in the write queue
+			// 从读队列里取出第一个并从队列中移除
 			currentRead = [readQueue objectAtIndex:0];
 			[readQueue removeObjectAtIndex:0];
 			
-			
 			if ([currentRead isKindOfClass:[GCDAsyncSpecialPacket class]])
 			{
+			// 如果是特殊包，则尝试启用TLS
 				LogVerbose(@"Dequeued GCDAsyncSpecialPacket");
 				
 				// Attempt to start TLS
+				// 设置启用读TLS
 				flags |= kStartingReadTLS;
 				
 				// This method won't do anything unless both kStartingReadTLS and kStartingWriteTLS are set
+				// 尝试启用TLS
 				[self maybeStartTLS];
 			}
 			else
 			{
+				// 如果不是特殊包，就普通读取
 				LogVerbose(@"Dequeued GCDAsyncReadPacket");
 				
 				// Setup read timer (if needed)
+				// 设置读取的计时器，并开始读取
 				[self setupReadTimerWithTimeout:currentRead->timeout];
 				
 				// Immediately read, if possible
@@ -4694,20 +4794,25 @@ enum GCDAsyncSocketConfig
 		}
 		else if (flags & kDisconnectAfterReads)
 		{
+		// 如果是读取后执行断开连接
 			if (flags & kDisconnectAfterWrites)
 			{
+			// 如果是写入后执行断开连接
 				if (([writeQueue count] == 0) && (currentWrite == nil))
 				{
+				// 如果写队列为空，且现在没有正在处理的写任务，就关闭连接
 					[self closeWithError:nil];
 				}
 			}
 			else
 			{
+			// 如果并不是写入后执行断开连接，则直接关闭
 				[self closeWithError:nil];
 			}
 		}
 		else if (flags & kSocketSecure)
 		{
+		// 
 			[self flushSSLBuffers];
 			
 			// Edge case:
