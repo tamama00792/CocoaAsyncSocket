@@ -1006,7 +1006,7 @@ enum GCDAsyncSocketConfig
 	void *IsOnSocketQueueOrTargetQueueKey;
 	
 	id userData;
-    NSTimeInterval alternateAddressDelay;
+    NSTimeInterval alternateAddressDelay;// 连接备用地址的延迟
 }
 // 初始化，不设置代理对象、socket队列
 - (instancetype)init
@@ -2438,7 +2438,7 @@ enum GCDAsyncSocketConfig
 		dispatch_async(globalConcurrentQueue, ^{ @autoreleasepool {
 		#pragma clang diagnostic push
 		#pragma clang diagnostic warning "-Wimplicit-retain-self"
-			// 返回地址组
+			// 根据host和端口号来获取地址组，域名解析
 			NSError *lookupErr = nil;
 			NSMutableArray *addresses = [[self class] lookupHost:hostCpy port:port error:&lookupErr];
 			
@@ -2471,14 +2471,14 @@ enum GCDAsyncSocketConfig
 				}
 				
 				dispatch_async(strongSelf->socketQueue, ^{ @autoreleasepool {
-					// 调用成功后的处理
+					// 调用获取地址成功后的处理，去连接
 					[strongSelf lookup:aStateIndex didSucceedWithAddress4:address4 address6:address6];
 				}});
 			}
 			
 		#pragma clang diagnostic pop
 		}});
-		// 开始连接
+		// 开始连接的超时计时器
 		[self startConnectTimeout:timeout];
 		
 		result = YES;
@@ -2527,10 +2527,12 @@ enum GCDAsyncSocketConfig
 		
 		if ([remoteAddr length] >= sizeof(struct sockaddr))
 		{
+			// 如果地址长度大于等于sockaddr的大小，则创建一个sockaddr指针指向该地址
 			const struct sockaddr *sockaddr = (const struct sockaddr *)[remoteAddr bytes];
 			
 			if (sockaddr->sa_family == AF_INET)
 			{
+				// 如果是IPv4且长度符合要求，则赋值IPv4
 				if ([remoteAddr length] == sizeof(struct sockaddr_in))
 				{
 					address4 = remoteAddr;
@@ -2538,6 +2540,7 @@ enum GCDAsyncSocketConfig
 			}
 			else if (sockaddr->sa_family == AF_INET6)
 			{
+				// 如果是IPv6且长度符合要求，则赋值IPv6
 				if ([remoteAddr length] == sizeof(struct sockaddr_in6))
 				{
 					address6 = remoteAddr;
@@ -2547,12 +2550,13 @@ enum GCDAsyncSocketConfig
 		
 		if ((address4 == nil) && (address6 == nil))
 		{
+			// 如果没取到地址，则报错
 			NSString *msg = @"A valid IPv4 or IPv6 address was not given";
 			err = [self badParamError:msg];
 			
 			return_from_block;
 		}
-		
+		// 检查IPv4和IPv6的可用性，必要时报错
         BOOL isIPv4Disabled = (self->config & kIPv4Disabled) ? YES : NO;
         BOOL isIPv6Disabled = (self->config & kIPv6Disabled) ? YES : NO;
 		
@@ -2573,7 +2577,7 @@ enum GCDAsyncSocketConfig
 		}
 		
 		// Run through standard pre-connect checks
-		
+		// 连接前检查一遍
 		if (![self preConnectWithInterface:interface error:&err])
 		{
 			return_from_block;
@@ -2581,14 +2585,14 @@ enum GCDAsyncSocketConfig
 		
 		// We've made it past all the checks.
 		// It's time to start the connection process.
-		
+		// 连接对应的地址
 		if (![self connectWithAddress4:address4 address6:address6 error:&err])
 		{
 			return_from_block;
 		}
-		
+		// 标记socket开始
         self->flags |= kSocketStarted;
-		
+		// 开始
 		[self startConnectTimeout:timeout];
 		
 		result = YES;
@@ -2607,7 +2611,7 @@ enum GCDAsyncSocketConfig
 	
 	return result;
 }
-
+// 连接到指定的地址，且设置超时
 - (BOOL)connectToUrl:(NSURL *)url withTimeout:(NSTimeInterval)timeout error:(NSError **)errPtr
 {
 	LogTrace();
@@ -2618,7 +2622,7 @@ enum GCDAsyncSocketConfig
 	dispatch_block_t block = ^{ @autoreleasepool {
 		
 		// Check for problems with host parameter
-		
+		// 检查地址
 		if ([url.path length] == 0)
 		{
 			NSString *msg = @"Invalid unix domain socket url.";
@@ -2628,7 +2632,7 @@ enum GCDAsyncSocketConfig
 		}
 		
 		// Run through standard pre-connect checks
-		
+		// 在连接前进行检查
 		if (![self preConnectWithUrl:url error:&err])
 		{
 			return_from_block;
@@ -2636,11 +2640,11 @@ enum GCDAsyncSocketConfig
 		
 		// We've made it past all the checks.
 		// It's time to start the connection process.
-		
+		// 标记socket开始
         self->flags |= kSocketStarted;
 		
 		// Start the normal connection process
-		
+		// 开始连接Unix域地址，如果失败则关闭
 		NSError *connectError = nil;
         if (![self connectWithAddressUN:self->connectInterfaceUN error:&connectError])
 		{
@@ -2648,12 +2652,12 @@ enum GCDAsyncSocketConfig
 			
 			return_from_block;
 		}
-
+		// 开启连接超时的定时器
 		[self startConnectTimeout:timeout];
 		
 		result = YES;
 	}};
-	
+	// 在socket队列上执行
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
 		block();
 	else
@@ -2667,9 +2671,10 @@ enum GCDAsyncSocketConfig
 	
 	return result;
 }
-
+// 连接到本地服务（Bonjour）
 - (BOOL)connectToNetService:(NSNetService *)netService error:(NSError **)errPtr
 {
+	// 获取地址去连接
 	NSArray* addresses = [netService addresses];
 	for (NSData* address in addresses)
 	{
@@ -2682,14 +2687,14 @@ enum GCDAsyncSocketConfig
 	
 	return NO;
 }
-
+// 域名解析获取地址成功后，进行连接
 - (void)lookup:(int)aStateIndex didSucceedWithAddress4:(NSData *)address4 address6:(NSData *)address6
 {
 	LogTrace();
 	
 	NSAssert(dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey), @"Must be dispatched on socketQueue");
 	NSAssert(address4 || address6, @"Expected at least one valid address");
-	
+	// 确保连接的索引没变
 	if (aStateIndex != stateIndex)
 	{
 		LogInfo(@"Ignoring lookupDidSucceed, already disconnected");
@@ -2700,7 +2705,7 @@ enum GCDAsyncSocketConfig
 	}
 	
 	// Check for problems
-	
+	// 检查是否有问题
 	BOOL isIPv4Disabled = (config & kIPv4Disabled) ? YES : NO;
 	BOOL isIPv6Disabled = (config & kIPv6Disabled) ? YES : NO;
 	
@@ -2721,7 +2726,7 @@ enum GCDAsyncSocketConfig
 	}
 	
 	// Start the normal connection process
-	
+	// 连接地址，如果失败则关闭
 	NSError *err = nil;
 	if (![self connectWithAddress4:address4 address6:address6 error:&err])
 	{
@@ -2737,13 +2742,14 @@ enum GCDAsyncSocketConfig
  * the original connection request may have already been cancelled or timed-out by the time this method is invoked.
  * The lookupIndex tells us whether the lookup is still valid or not.
 **/
+// 域名解析获取地址失败后调用的方法
 - (void)lookup:(int)aStateIndex didFail:(NSError *)error
 {
 	LogTrace();
 	
 	NSAssert(dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey), @"Must be dispatched on socketQueue");
 	
-	
+	// 如果当前连接索引变了，则不处理
 	if (aStateIndex != stateIndex)
 	{
 		LogInfo(@"Ignoring lookup:didFail: - already disconnected");
@@ -2752,11 +2758,11 @@ enum GCDAsyncSocketConfig
 		// That is, socket was disconnected, or connection has already timed out.
 		return;
 	}
-	
+	// 结束超时连接的计时器，并关闭
 	[self endConnectTimeout];
 	[self closeWithError:error];
 }
-
+// 在指定接口地址上绑定socketFD
 - (BOOL)bindSocket:(int)socketFD toInterface:(NSData *)connectInterface error:(NSError **)errPtr
 {
     // Bind the socket to the desired interface (if needed)
@@ -2764,18 +2770,19 @@ enum GCDAsyncSocketConfig
     if (connectInterface)
     {
         LogVerbose(@"Binding socket...");
-        
+        // 如果接口地址存在
         if ([[self class] portFromAddress:connectInterface] > 0)
         {
+	    // 
             // Since we're going to be binding to a specific port,
             // we should turn on reuseaddr to allow us to override sockets in time_wait.
-            
+            // 如果需要绑定一个指定端口，则需要打开复用的特性，以免绑定失败
             int reuseOn = 1;
             setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuseOn, sizeof(reuseOn));
         }
-        
+        // 创建接口地址的指针
         const struct sockaddr *interfaceAddr = (const struct sockaddr *)[connectInterface bytes];
-        
+        // 在对应的接口地址绑定socketFD，失败则报错
         int result = bind(socketFD, interfaceAddr, (socklen_t)[connectInterface length]);
         if (result != 0)
         {
@@ -2788,9 +2795,10 @@ enum GCDAsyncSocketConfig
     
     return YES;
 }
-
+// 创建socketFD
 - (int)createSocket:(int)family connectInterface:(NSData *)connectInterface errPtr:(NSError **)errPtr
 {
+    // 创建对应的socketFD，失败则报错
     int socketFD = socket(family, SOCK_STREAM, 0);
     
     if (socketFD == SOCKET_NULL)
@@ -2800,7 +2808,7 @@ enum GCDAsyncSocketConfig
         
         return socketFD;
     }
-    
+    // 在指定的接口地址上绑定socketFD，失败则关闭socketFD
     if (![self bindSocket:socketFD toInterface:connectInterface error:errPtr])
     {
         [self closeSocket:socketFD];
@@ -2809,16 +2817,17 @@ enum GCDAsyncSocketConfig
     }
     
     // Prevent SIGPIPE signals
-    
+    // 屏蔽SIGPIPE信号
     int nosigpipe = 1;
     setsockopt(socketFD, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
     
     return socketFD;
 }
-
+// 连接对应的地址
 - (void)connectSocket:(int)socketFD address:(NSData *)address stateIndex:(int)aStateIndex
 {
     // If there already is a socket connected, we close socketFD and return
+    // 如果已经连接了则关闭此socketFD，并返回
     if (self.isConnected)
     {
         [self closeSocket:socketFD];
@@ -2828,20 +2837,20 @@ enum GCDAsyncSocketConfig
     // Start the connection process in a background queue
     
     __weak GCDAsyncSocket *weakSelf = self;
-    
+    // 在全局并发队列上执行
     dispatch_queue_t globalConcurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
     dispatch_async(globalConcurrentQueue, ^{
 #pragma clang diagnostic push
 #pragma clang diagnostic warning "-Wimplicit-retain-self"
-        
+        // 连接地址
         int result = connect(socketFD, (const struct sockaddr *)[address bytes], (socklen_t)[address length]);
         int err = errno;
         
         __strong GCDAsyncSocket *strongSelf = weakSelf;
         if (strongSelf == nil) return_from_block;
-        
+        // 在socket队列上执行
         dispatch_async(strongSelf->socketQueue, ^{ @autoreleasepool {
-            
+            // 如果已经连接了，则关闭socketFD
             if (strongSelf.isConnected)
             {
                 [strongSelf closeSocket:socketFD];
@@ -2850,12 +2859,14 @@ enum GCDAsyncSocketConfig
             
             if (result == 0)
             {
+	    	//如果连接成功，则关闭未用到的socket，并调用成功连接的事件
                 [self closeUnusedSocket:socketFD];
                 
                 [strongSelf didConnect:aStateIndex];
             }
             else
             {
+	    	//如果连接失败，则关闭该socketFD，并且检测，如果没有其他socket准备尝试连接，则调用连接失败的事件
                 [strongSelf closeSocket:socketFD];
                 
                 // If there are no more sockets trying to connect, we inform the error to the delegate
@@ -2872,7 +2883,7 @@ enum GCDAsyncSocketConfig
     
     LogVerbose(@"Connecting...");
 }
-
+// 关闭socketFD
 - (void)closeSocket:(int)socketFD
 {
     if (socketFD != SOCKET_NULL &&
@@ -2892,7 +2903,7 @@ enum GCDAsyncSocketConfig
         }
     }
 }
-
+// 关闭没用到的socketFD
 - (void)closeUnusedSocket:(int)usedSocketFD
 {
     if (usedSocketFD != socket4FD)
@@ -2904,7 +2915,7 @@ enum GCDAsyncSocketConfig
         [self closeSocket:socket6FD];
     }
 }
-
+// 连接对应的地址
 - (BOOL)connectWithAddress4:(NSData *)address4 address6:(NSData *)address6 error:(NSError **)errPtr
 {
 	LogTrace();
@@ -2919,7 +2930,7 @@ enum GCDAsyncSocketConfig
 	BOOL preferIPv6 = (config & kPreferIPv6) ? YES : NO;
 	
 	// Create and bind the sockets
-    
+    // 创建对应的socketFD
     if (address4)
     {
         LogVerbose(@"Creating IPv4 socket");
@@ -2941,7 +2952,7 @@ enum GCDAsyncSocketConfig
 	
 	int socketFD, alternateSocketFD;
 	NSData *address, *alternateAddress;
-	
+    // 根据倾向策略来创建主备socketFD和主备地址
     if ((preferIPv6 && socket6FD != SOCKET_NULL) || socket4FD == SOCKET_NULL)
     {
         socketFD = socket6FD;
@@ -2958,9 +2969,9 @@ enum GCDAsyncSocketConfig
     }
 
     int aStateIndex = stateIndex;
-    
+    // 开始连接主地址
     [self connectSocket:socketFD address:address stateIndex:aStateIndex];
-    
+    // 如果存在备用地址，则在一定延迟后，连接备用地址
     if (alternateAddress)
     {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(alternateAddressDelay * NSEC_PER_SEC)), socketQueue, ^{
@@ -2970,7 +2981,7 @@ enum GCDAsyncSocketConfig
 	
 	return YES;
 }
-
+// 连接对应的unix地址
 - (BOOL)connectWithAddressUN:(NSData *)address error:(NSError **)errPtr
 {
 	LogTrace();
@@ -2982,7 +2993,7 @@ enum GCDAsyncSocketConfig
 	int socketFD;
 	
 	LogVerbose(@"Creating unix domain socket");
-	
+	// 创建socketFD
 	socketUN = socket(AF_UNIX, SOCK_STREAM, 0);
 	
 	socketFD = socketUN;
@@ -2998,7 +3009,7 @@ enum GCDAsyncSocketConfig
 	// Bind the socket to the desired interface (if needed)
 	
 	LogVerbose(@"Binding socket...");
-	
+	// 设置复用
 	int reuseOn = 1;
 	setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuseOn, sizeof(reuseOn));
 
@@ -3014,21 +3025,22 @@ enum GCDAsyncSocketConfig
 //	}
 	
 	// Prevent SIGPIPE signals
-	
+	// 屏蔽SIGPIPE信号
 	int nosigpipe = 1;
 	setsockopt(socketFD, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
 	
 	// Start the connection process in a background queue
 	
 	int aStateIndex = stateIndex;
-	
+	// 在全局并发队列执行
 	dispatch_queue_t globalConcurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	dispatch_async(globalConcurrentQueue, ^{
-		
+		// 连接socket
 		const struct sockaddr *addr = (const struct sockaddr *)[address bytes];
 		int result = connect(socketFD, addr, addr->sa_len);
 		if (result == 0)
 		{
+		// 连接成功，在socket队列上调用连接成功的方法
             dispatch_async(self->socketQueue, ^{ @autoreleasepool {
 				
 				[self didConnect:aStateIndex];
@@ -3037,6 +3049,7 @@ enum GCDAsyncSocketConfig
 		else
 		{
 			// TODO: Bad file descriptor
+			// 连接失败，在socket队列上调用连接失败的方法
 			perror("connect");
 			NSError *error = [self errorWithErrno:errno reason:@"Error in connect() function"];
 			
@@ -3051,7 +3064,7 @@ enum GCDAsyncSocketConfig
 	
 	return YES;
 }
-
+// 连接成功调用的方法，会创建读写流并处理积压的消息
 - (void)didConnect:(int)aStateIndex
 {
 	LogTrace();
@@ -3198,18 +3211,18 @@ enum GCDAsyncSocketConfig
 	[self setupReadAndWriteSourcesForNewlyConnectedSocket:socketFD];
 	
 	// Dequeue any pending read/write requests
-	
+	// 处理积压的读写请求
 	[self maybeDequeueRead];
 	[self maybeDequeueWrite];
 }
-
+// 没连接成功调用的方法
 - (void)didNotConnect:(int)aStateIndex error:(NSError *)error
 {
 	LogTrace();
 	
 	NSAssert(dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey), @"Must be dispatched on socketQueue");
 	
-	
+	// 如果连接索引变化了则不处理
 	if (aStateIndex != stateIndex)
 	{
 		LogInfo(@"Ignoring didNotConnect, already disconnected");
@@ -3218,14 +3231,15 @@ enum GCDAsyncSocketConfig
 		// That is, socket was disconnected, or connection has already timed out.
 		return;
 	}
-	
+	// 关闭连接
 	[self closeWithError:error];
 }
-
+// 开始连接计时器
 - (void)startConnectTimeout:(NSTimeInterval)timeout
 {
 	if (timeout >= 0.0)
 	{
+		// 如果有超时时间，则创建一个计时器
 		connectTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, socketQueue);
 		
 		__weak GCDAsyncSocket *weakSelf = self;
@@ -3233,7 +3247,7 @@ enum GCDAsyncSocketConfig
 		dispatch_source_set_event_handler(connectTimer, ^{ @autoreleasepool {
 		#pragma clang diagnostic push
 		#pragma clang diagnostic warning "-Wimplicit-retain-self"
-		
+			// 时间到了触发超时方法
 			__strong GCDAsyncSocket *strongSelf = weakSelf;
 			if (strongSelf == nil) return_from_block;
 			
@@ -3247,21 +3261,21 @@ enum GCDAsyncSocketConfig
 		dispatch_source_set_cancel_handler(connectTimer, ^{
 		#pragma clang diagnostic push
 		#pragma clang diagnostic warning "-Wimplicit-retain-self"
-			
+			// 取消则释放资源
 			LogVerbose(@"dispatch_release(connectTimer)");
 			dispatch_release(theConnectTimer);
 			
 		#pragma clang diagnostic pop
 		});
 		#endif
-		
+		// 开启计时器
 		dispatch_time_t tt = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC));
 		dispatch_source_set_timer(connectTimer, tt, DISPATCH_TIME_FOREVER, 0);
 		
 		dispatch_resume(connectTimer);
 	}
 }
-// 取消连接的计时器
+// 取消计算连接超时的计时器
 - (void)endConnectTimeout
 {
 	LogTrace();
@@ -3289,11 +3303,11 @@ enum GCDAsyncSocketConfig
 		connectInterface6 = nil;
 	}
 }
-
+// 连接超时
 - (void)doConnectTimeout
 {
 	LogTrace();
-	
+	// 关闭计时器，并关闭连接
 	[self endConnectTimeout];
 	[self closeWithError:[self connectTimeoutError]];
 }
@@ -3301,30 +3315,32 @@ enum GCDAsyncSocketConfig
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Disconnecting
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+// 关闭连接
 - (void)closeWithError:(NSError *)error
 {
 	LogTrace();
 	NSAssert(dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey), @"Must be dispatched on socketQueue");
-	
+	// 结束超时的计时
 	[self endConnectTimeout];
-	
+	// 如果当前读或写正在处理，则终止
 	if (currentRead != nil)  [self endCurrentRead];
 	if (currentWrite != nil) [self endCurrentWrite];
-	
+	// 清空读写队列
 	[readQueue removeAllObjects];
 	[writeQueue removeAllObjects];
-	
+	// 重设缓冲区
 	[preBuffer reset];
 	
 	#if TARGET_OS_IPHONE
 	{
 		if (readStream || writeStream)
 		{
+			// 如果读写流创建过，则从runloop中移除
 			[self removeStreamsFromRunLoop];
 			
 			if (readStream)
 			{
+				// 关闭并释放读流
 				CFReadStreamSetClient(readStream, kCFStreamEventNone, NULL, NULL);
 				CFReadStreamClose(readStream);
 				CFRelease(readStream);
@@ -3332,6 +3348,7 @@ enum GCDAsyncSocketConfig
 			}
 			if (writeStream)
 			{
+				// 关闭并释放写流
 				CFWriteStreamSetClient(writeStream, kCFStreamEventNone, NULL, NULL);
 				CFWriteStreamClose(writeStream);
 				CFRelease(writeStream);
@@ -3340,7 +3357,7 @@ enum GCDAsyncSocketConfig
 		}
 	}
 	#endif
-	
+	// 重设ssl缓冲区
 	[sslPreBuffer reset];
 	sslErrCode = lastSSLHandshakeError = noErr;
 	
@@ -3348,7 +3365,7 @@ enum GCDAsyncSocketConfig
 	{
 		// Getting a linker error here about the SSLx() functions?
 		// You need to add the Security Framework to your application.
-		
+		// 释放ssl上下文
 		SSLClose(sslContext);
 		
 		#if TARGET_OS_IPHONE || (__MAC_OS_X_VERSION_MIN_REQUIRED >= 1080)
@@ -3364,11 +3381,11 @@ enum GCDAsyncSocketConfig
 	// invoke the cancel handler if the dispatch source is paused.
 	// So we have to unpause the source if needed.
 	// This allows the cancel handler to be run, which in turn releases the source and closes the socket.
-	
+	// 当源被暂停的时候，取消不会触发取消的handler，因此需要恢复源后在取消
 	if (!accept4Source && !accept6Source && !acceptUNSource && !readSource && !writeSource)
 	{
 		LogVerbose(@"manually closing close");
-
+		// 没有创建过任何源，因此直接关闭socketFD即可
 		if (socket4FD != SOCKET_NULL)
 		{
 			LogVerbose(@"close(socket4FD)");
@@ -3394,6 +3411,7 @@ enum GCDAsyncSocketConfig
 	}
 	else
 	{
+		// 接受的源从来不会被暂停，所以可以直接取消
 		if (accept4Source)
 		{
 			LogVerbose(@"dispatch_source_cancel(accept4Source)");
@@ -3403,7 +3421,7 @@ enum GCDAsyncSocketConfig
 			
 			accept4Source = NULL;
 		}
-		
+		// 接受的源从来不会被暂停，所以可以直接取消
 		if (accept6Source)
 		{
 			LogVerbose(@"dispatch_source_cancel(accept6Source)");
@@ -3413,7 +3431,7 @@ enum GCDAsyncSocketConfig
 			
 			accept6Source = NULL;
 		}
-		
+		// 接受的源从来不会被暂停，所以可以直接取消
 		if (acceptUNSource)
 		{
 			LogVerbose(@"dispatch_source_cancel(acceptUNSource)");
@@ -3423,7 +3441,7 @@ enum GCDAsyncSocketConfig
 			
 			acceptUNSource = NULL;
 		}
-	
+		// 读源取消时还需要恢复才能保证触发取消的handler
 		if (readSource)
 		{
 			LogVerbose(@"dispatch_source_cancel(readSource)");
@@ -3433,7 +3451,7 @@ enum GCDAsyncSocketConfig
 			
 			readSource = NULL;
 		}
-		
+		// 写源取消时还需要恢复才能保证触发取消的handler
 		if (writeSource)
 		{
 			LogVerbose(@"dispatch_source_cancel(writeSource)");
@@ -3453,16 +3471,19 @@ enum GCDAsyncSocketConfig
 	
 	// If the client has passed the connect/accept method, then the connection has at least begun.
 	// Notify delegate that it is now ending.
+	// 如果有kSocketStared，说明已经开始连接了，则需要调用代理
 	BOOL shouldCallDelegate = (flags & kSocketStarted) ? YES : NO;
 	BOOL isDeallocating = (flags & kDealloc) ? YES : NO;
 	
 	// Clear stored socket info and all flags (config remains as is)
+	// 清除储存的sokect的标记和信息
 	socketFDBytesAvailable = 0;
 	flags = 0;
 	sslWriteCachedLength = 0;
 	
 	if (shouldCallDelegate)
 	{
+		// 如果需要调用代理，则告知socket已经终止连接
 		__strong id<GCDAsyncSocketDelegate> theDelegate = delegate;
 		__strong id theSelf = isDeallocating ? nil : self;
 		
@@ -3475,11 +3496,11 @@ enum GCDAsyncSocketConfig
 		}	
 	}
 }
-
+// 停止连接
 - (void)disconnect
 {
 	dispatch_block_t block = ^{ @autoreleasepool {
-		
+	// 如果socket已经开始，则关闭
         if (self->flags & kSocketStarted)
 		{
 			[self closeWithError:nil];
@@ -3487,43 +3508,46 @@ enum GCDAsyncSocketConfig
 	}};
 	
 	// Synchronous disconnection, as documented in the header file
-	
+	// 确保在socket队列上执行
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
 		block();
 	else
 		dispatch_sync(socketQueue, block);
 }
-
+// 在读完后才停止连接
 - (void)disconnectAfterReading
 {
 	dispatch_async(socketQueue, ^{ @autoreleasepool {
 		
         if (self->flags & kSocketStarted)
 		{
+			// 如果socket已经开始，则设置忽略读写以及在读完后停止连接的标记，然后尝试关闭
             self->flags |= (kForbidReadsWrites | kDisconnectAfterReads);
 			[self maybeClose];
 		}
 	}});
 }
-
+// 在写完后才停止连接
 - (void)disconnectAfterWriting
 {
 	dispatch_async(socketQueue, ^{ @autoreleasepool {
 		
         if (self->flags & kSocketStarted)
 		{
+			// 如果socket已经开始，则设置忽略读写以及在写完后停止连接的标记，然后尝试关闭
             self->flags |= (kForbidReadsWrites | kDisconnectAfterWrites);
 			[self maybeClose];
 		}
 	}});
 }
-
+// 在读写都做完后才停止连接
 - (void)disconnectAfterReadingAndWriting
 {
 	dispatch_async(socketQueue, ^{ @autoreleasepool {
 		
         if (self->flags & kSocketStarted)
 		{
+			// 如果socket已经开始，则设置忽略读写以及在读写完后停止连接的标记，然后尝试关闭
             self->flags |= (kForbidReadsWrites | kDisconnectAfterReads | kDisconnectAfterWrites);
 			[self maybeClose];
 		}
@@ -3535,6 +3559,7 @@ enum GCDAsyncSocketConfig
  * That is, if all writes have completed, and we're set to disconnect after writing,
  * or if all reads have completed, and we're set to disconnect after reading.
 **/
+// 尝试关闭
 - (void)maybeClose
 {
 	NSAssert(dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey), @"Must be dispatched on socketQueue");
@@ -3543,31 +3568,39 @@ enum GCDAsyncSocketConfig
 	
 	if (flags & kDisconnectAfterReads)
 	{
+		// 如果设置了读后才关闭连接
 		if (([readQueue count] == 0) && (currentRead == nil))
 		{
+			// 如果读队列为空，现在也没有读的任务
 			if (flags & kDisconnectAfterWrites)
 			{
+				// 如果设置了写后才关闭连接
 				if (([writeQueue count] == 0) && (currentWrite == nil))
 				{
+					// 如果写队列为空，现在也没有写的任务，则设置需要关闭
 					shouldClose = YES;
 				}
 			}
 			else
 			{
+				// 如果没设置写后才关闭连接，则直接设置需要关闭
 				shouldClose = YES;
 			}
 		}
 	}
 	else if (flags & kDisconnectAfterWrites)
 	{
+		// 如果设置了写后才关闭连接
 		if (([writeQueue count] == 0) && (currentWrite == nil))
 		{
+			// 如果写队列为空，现在也没有写的任务，则设置需要关闭
 			shouldClose = YES;
 		}
 	}
 	
 	if (shouldClose)
 	{
+		// 如果需要关闭则关闭
 		[self closeWithError:nil];
 	}
 }
@@ -3575,21 +3608,21 @@ enum GCDAsyncSocketConfig
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Errors
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+// 设置错误，并赋予原因
 - (NSError *)badConfigError:(NSString *)errMsg
 {
 	NSDictionary *userInfo = @{NSLocalizedDescriptionKey : errMsg};
 	
 	return [NSError errorWithDomain:GCDAsyncSocketErrorDomain code:GCDAsyncSocketBadConfigError userInfo:userInfo];
 }
-
+// 参数错误，并赋予原因
 - (NSError *)badParamError:(NSString *)errMsg
 {
 	NSDictionary *userInfo = @{NSLocalizedDescriptionKey : errMsg};
 	
 	return [NSError errorWithDomain:GCDAsyncSocketErrorDomain code:GCDAsyncSocketBadParamError userInfo:userInfo];
 }
-
+// 域名解析错误，并赋予原因
 + (NSError *)gaiError:(int)gai_error
 {
 	NSString *errMsg = [NSString stringWithCString:gai_strerror(gai_error) encoding:NSASCIIStringEncoding];
@@ -3597,7 +3630,7 @@ enum GCDAsyncSocketConfig
 	
 	return [NSError errorWithDomain:@"kCFStreamErrorDomainNetDB" code:gai_error userInfo:userInfo];
 }
-
+// socketFD错误，并赋予原因
 - (NSError *)errorWithErrno:(int)err reason:(NSString *)reason
 {
 	NSString *errMsg = [NSString stringWithUTF8String:strerror(err)];
@@ -3606,7 +3639,7 @@ enum GCDAsyncSocketConfig
 	
 	return [NSError errorWithDomain:NSPOSIXErrorDomain code:err userInfo:userInfo];
 }
-
+// socketFD错误
 - (NSError *)errnoError
 {
 	NSString *errMsg = [NSString stringWithUTF8String:strerror(errno)];
@@ -3614,7 +3647,7 @@ enum GCDAsyncSocketConfig
 	
 	return [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:userInfo];
 }
-
+// ssl错误
 - (NSError *)sslError:(OSStatus)ssl_error
 {
 	NSString *msg = @"Error code definition can be found in Apple's SecureTransport.h";
@@ -3622,7 +3655,7 @@ enum GCDAsyncSocketConfig
 	
 	return [NSError errorWithDomain:@"kCFStreamErrorDomainSSL" code:ssl_error userInfo:userInfo];
 }
-
+// 连接超时错误
 - (NSError *)connectTimeoutError
 {
 	NSString *errMsg = NSLocalizedStringWithDefaultValue(@"GCDAsyncSocketConnectTimeoutError",
@@ -3637,6 +3670,7 @@ enum GCDAsyncSocketConfig
 /**
  * Returns a standard AsyncSocket maxed out error.
 **/
+// 读溢出错误
 - (NSError *)readMaxedOutError
 {
 	NSString *errMsg = NSLocalizedStringWithDefaultValue(@"GCDAsyncSocketReadMaxedOutError",
@@ -3651,6 +3685,7 @@ enum GCDAsyncSocketConfig
 /**
  * Returns a standard AsyncSocket write timeout error.
 **/
+// 读超时错误
 - (NSError *)readTimeoutError
 {
 	NSString *errMsg = NSLocalizedStringWithDefaultValue(@"GCDAsyncSocketReadTimeoutError",
@@ -3665,6 +3700,7 @@ enum GCDAsyncSocketConfig
 /**
  * Returns a standard AsyncSocket write timeout error.
 **/
+// 写超时错误
 - (NSError *)writeTimeoutError
 {
 	NSString *errMsg = NSLocalizedStringWithDefaultValue(@"GCDAsyncSocketWriteTimeoutError",
@@ -3675,7 +3711,7 @@ enum GCDAsyncSocketConfig
 	
 	return [NSError errorWithDomain:GCDAsyncSocketErrorDomain code:GCDAsyncSocketWriteTimeoutError userInfo:userInfo];
 }
-
+// 连接关闭错误
 - (NSError *)connectionClosedError
 {
 	NSString *errMsg = NSLocalizedStringWithDefaultValue(@"GCDAsyncSocketClosedError",
@@ -3686,7 +3722,7 @@ enum GCDAsyncSocketConfig
 	
 	return [NSError errorWithDomain:GCDAsyncSocketErrorDomain code:GCDAsyncSocketClosedError userInfo:userInfo];
 }
-
+// 其他错误
 - (NSError *)otherError:(NSString *)errMsg
 {
 	NSDictionary *userInfo = @{NSLocalizedDescriptionKey : errMsg};
@@ -3698,6 +3734,7 @@ enum GCDAsyncSocketConfig
 #pragma mark Diagnostics
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// 在socket队列上获取是否断开连接
 - (BOOL)isDisconnected
 {
 	__block BOOL result = NO;
@@ -3713,7 +3750,7 @@ enum GCDAsyncSocketConfig
 	
 	return result;
 }
-
+// 在socket队列上获取是否连接
 - (BOOL)isConnected
 {
 	__block BOOL result = NO;
@@ -3729,7 +3766,7 @@ enum GCDAsyncSocketConfig
 	
 	return result;
 }
-
+// 在socket队列上获取已连接的地址
 - (NSString *)connectedHost
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -3756,7 +3793,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列上获取已连接的端口号
 - (uint16_t)connectedPort
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -3784,7 +3821,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列上获取已连接的unix地址
 - (NSURL *)connectedUrl
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -3807,7 +3844,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列上获取本地地址
 - (NSString *)localHost
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -3834,7 +3871,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列上获取本地端口
 - (uint16_t)localPort
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -3862,7 +3899,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 获取已连接的IPv4地址
 - (NSString *)connectedHost4
 {
 	if (socket4FD != SOCKET_NULL)
@@ -3870,7 +3907,7 @@ enum GCDAsyncSocketConfig
 	
 	return nil;
 }
-
+// 获取已连接的IPv6地址
 - (NSString *)connectedHost6
 {
 	if (socket6FD != SOCKET_NULL)
@@ -3878,7 +3915,7 @@ enum GCDAsyncSocketConfig
 	
 	return nil;
 }
-
+// 获取已连接的IPv4端口号
 - (uint16_t)connectedPort4
 {
 	if (socket4FD != SOCKET_NULL)
@@ -3886,7 +3923,7 @@ enum GCDAsyncSocketConfig
 	
 	return 0;
 }
-
+// 获取已连接的IPv6端口号
 - (uint16_t)connectedPort6
 {
 	if (socket6FD != SOCKET_NULL)
@@ -3894,7 +3931,7 @@ enum GCDAsyncSocketConfig
 	
 	return 0;
 }
-
+// 获取本地IPv4地址
 - (NSString *)localHost4
 {
 	if (socket4FD != SOCKET_NULL)
@@ -3902,7 +3939,7 @@ enum GCDAsyncSocketConfig
 	
 	return nil;
 }
-
+// 获取本地IPv6地址
 - (NSString *)localHost6
 {
 	if (socket6FD != SOCKET_NULL)
@@ -3910,7 +3947,7 @@ enum GCDAsyncSocketConfig
 	
 	return nil;
 }
-
+// 获取本地IPv4端口号
 - (uint16_t)localPort4
 {
 	if (socket4FD != SOCKET_NULL)
@@ -3918,7 +3955,7 @@ enum GCDAsyncSocketConfig
 	
 	return 0;
 }
-
+// 获取本地IPv6端口号
 - (uint16_t)localPort6
 {
 	if (socket6FD != SOCKET_NULL)
@@ -3926,7 +3963,7 @@ enum GCDAsyncSocketConfig
 	
 	return 0;
 }
-
+// 从IPv4套接字获取对端地址
 - (NSString *)connectedHostFromSocket4:(int)socketFD
 {
 	struct sockaddr_in sockaddr4;
@@ -3938,7 +3975,7 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] hostFromSockaddr4:&sockaddr4];
 }
-
+// 从IPv6套接字获取对端地址
 - (NSString *)connectedHostFromSocket6:(int)socketFD
 {
 	struct sockaddr_in6 sockaddr6;
@@ -3950,7 +3987,7 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] hostFromSockaddr6:&sockaddr6];
 }
-
+// 从IPv4套接字获取对端端口
 - (uint16_t)connectedPortFromSocket4:(int)socketFD
 {
 	struct sockaddr_in sockaddr4;
@@ -3962,7 +3999,7 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] portFromSockaddr4:&sockaddr4];
 }
-
+// 从IPv6套接字获取对端端口
 - (uint16_t)connectedPortFromSocket6:(int)socketFD
 {
 	struct sockaddr_in6 sockaddr6;
@@ -3974,7 +4011,7 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] portFromSockaddr6:&sockaddr6];
 }
-
+// 从Unix套接字获取对端地址
 - (NSURL *)connectedUrlFromSocketUN:(int)socketFD
 {
 	struct sockaddr_un sockaddr;
@@ -3986,7 +4023,7 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] urlFromSockaddrUN:&sockaddr];
 }
-
+// 从socket4FD获取本地地址
 - (NSString *)localHostFromSocket4:(int)socketFD
 {
 	struct sockaddr_in sockaddr4;
@@ -3998,7 +4035,7 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] hostFromSockaddr4:&sockaddr4];
 }
-
+// 从socket6FD获取本地地址
 - (NSString *)localHostFromSocket6:(int)socketFD
 {
 	struct sockaddr_in6 sockaddr6;
@@ -4010,7 +4047,7 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] hostFromSockaddr6:&sockaddr6];
 }
-
+// 从socket4FD获取本地端口号
 - (uint16_t)localPortFromSocket4:(int)socketFD
 {
 	struct sockaddr_in sockaddr4;
@@ -4022,19 +4059,20 @@ enum GCDAsyncSocketConfig
 	}
 	return [[self class] portFromSockaddr4:&sockaddr4];
 }
-
+// 从socket6FD获取本地端口号
 - (uint16_t)localPortFromSocket6:(int)socketFD
 {
 	struct sockaddr_in6 sockaddr6;
 	socklen_t sockaddr6len = sizeof(sockaddr6);
-	
+	// 获取socketFD获取套接字
 	if (getsockname(socketFD, (struct sockaddr *)&sockaddr6, &sockaddr6len) < 0)
 	{
 		return 0;
 	}
+	// 返回端口
 	return [[self class] portFromSockaddr6:&sockaddr6];
 }
-
+// 在socket队列获取连接的地址
 - (NSData *)connectedAddress
 {
 	__block NSData *result = nil;
@@ -4044,7 +4082,7 @@ enum GCDAsyncSocketConfig
 		{
 			struct sockaddr_in sockaddr4;
 			socklen_t sockaddr4len = sizeof(sockaddr4);
-			
+			// 如果存在socket4FD，获取socket4FD的对端地址
             if (getpeername(self->socket4FD, (struct sockaddr *)&sockaddr4, &sockaddr4len) == 0)
 			{
 				result = [[NSData alloc] initWithBytes:&sockaddr4 length:sockaddr4len];
@@ -4055,7 +4093,7 @@ enum GCDAsyncSocketConfig
 		{
 			struct sockaddr_in6 sockaddr6;
 			socklen_t sockaddr6len = sizeof(sockaddr6);
-			
+			// 如果存在socket6FD，获取socket6FD的对端地址
             if (getpeername(self->socket6FD, (struct sockaddr *)&sockaddr6, &sockaddr6len) == 0)
 			{
 				result = [[NSData alloc] initWithBytes:&sockaddr6 length:sockaddr6len];
@@ -4070,7 +4108,7 @@ enum GCDAsyncSocketConfig
 	
 	return result;
 }
-
+// 在socket队列获取本地地址
 - (NSData *)localAddress
 {
 	__block NSData *result = nil;
@@ -4080,7 +4118,7 @@ enum GCDAsyncSocketConfig
 		{
 			struct sockaddr_in sockaddr4;
 			socklen_t sockaddr4len = sizeof(sockaddr4);
-			
+			// 如果存在socket4FD，获取socket4FD的套接字地址
             if (getsockname(self->socket4FD, (struct sockaddr *)&sockaddr4, &sockaddr4len) == 0)
 			{
 				result = [[NSData alloc] initWithBytes:&sockaddr4 length:sockaddr4len];
@@ -4091,7 +4129,7 @@ enum GCDAsyncSocketConfig
 		{
 			struct sockaddr_in6 sockaddr6;
 			socklen_t sockaddr6len = sizeof(sockaddr6);
-			
+			/ 如果存在socket6FD，获取socket6FD的套接字地址
             if (getsockname(self->socket6FD, (struct sockaddr *)&sockaddr6, &sockaddr6len) == 0)
 			{
 				result = [[NSData alloc] initWithBytes:&sockaddr6 length:sockaddr6len];
@@ -4106,7 +4144,7 @@ enum GCDAsyncSocketConfig
 	
 	return result;
 }
-
+// 在socket队列判断是否为IPv4的socket
 - (BOOL)isIPv4
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -4124,7 +4162,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列判断是否为IPv6的socket
 - (BOOL)isIPv6
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -4142,7 +4180,7 @@ enum GCDAsyncSocketConfig
 		return result;
 	}
 }
-
+// 在socket队列判断是否开启了加密
 - (BOOL)isSecure
 {
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
@@ -4174,6 +4212,7 @@ enum GCDAsyncSocketConfig
  * 
  * The returned value is a 'struct sockaddr' wrapped in an NSMutableData object.
 **/
+// 从接口描述中取出地址（实质是遍历网卡上取到的接口，取到和接口地址描述一致名字的接口，以此创建对应的地址返回）
 - (void)getInterfaceAddress4:(NSMutableData **)interfaceAddr4Ptr
                     address6:(NSMutableData **)interfaceAddr6Ptr
              fromDescription:(NSString *)interfaceDescription
@@ -4183,8 +4222,9 @@ enum GCDAsyncSocketConfig
 	NSMutableData *addr6 = nil;
 	
 	NSString *interface = nil;
-	
+
 	NSArray *components = [interfaceDescription componentsSeparatedByString:@":"];
+	// 取出冒号前面的host地址
 	if ([components count] > 0)
 	{
 		NSString *temp = [components objectAtIndex:0];
@@ -4193,6 +4233,7 @@ enum GCDAsyncSocketConfig
 			interface = temp;
 		}
 	}
+	// 取出冒号后面的端口号
 	if ([components count] > 1 && port == 0)
 	{
 		NSString *temp = [components objectAtIndex:1];
@@ -4207,7 +4248,7 @@ enum GCDAsyncSocketConfig
 	if (interface == nil)
 	{
 		// ANY address
-		
+		// 如果没取到接口地址，那么就创建一个0.0.0.0的地址（表明不确定地址或任意地址）
 		struct sockaddr_in sockaddr4;
 		memset(&sockaddr4, 0, sizeof(sockaddr4));
 		
@@ -4230,7 +4271,7 @@ enum GCDAsyncSocketConfig
 	else if ([interface isEqualToString:@"localhost"] || [interface isEqualToString:@"loopback"])
 	{
 		// LOOPBACK address
-		
+		// 如果为本机或环回地址（允许计算机的软件在本机上进行网络通信），则创建对应的地址（一般是127.0.0.1-127.255.255.254）
 		struct sockaddr_in sockaddr4;
 		memset(&sockaddr4, 0, sizeof(sockaddr4));
 		
@@ -4252,41 +4293,45 @@ enum GCDAsyncSocketConfig
 	}
 	else
 	{
+		// 取到了接口地址
 		const char *iface = [interface UTF8String];
 		
 		struct ifaddrs *addrs;
 		const struct ifaddrs *cursor;
-		
+		// 尝试获取本机网卡上的ip地址
 		if ((getifaddrs(&addrs) == 0))
 		{
+			// 取到了ip地址，则赋值给cursor
 			cursor = addrs;
 			while (cursor != NULL)
 			{
+				// 只要cursor还有值
 				if ((addr4 == nil) && (cursor->ifa_addr->sa_family == AF_INET))
 				{
 					// IPv4
-					
+					// 如果没取到IPv4的值，且当前cursor持有的接口地址属于IPv4，则将其赋值给nativeAddr4
 					struct sockaddr_in nativeAddr4;
 					memcpy(&nativeAddr4, cursor->ifa_addr, sizeof(nativeAddr4));
 					
 					if (strcmp(cursor->ifa_name, iface) == 0)
 					{
 						// Name match
-						
+						// 如果该接口的名字与设置的接口名字一直，则把设置的端口号赋值给该地址
 						nativeAddr4.sin_port = htons(port);
-						
+						// 创建IPv4的地址数据
 						addr4 = [NSMutableData dataWithBytes:&nativeAddr4 length:sizeof(nativeAddr4)];
 					}
 					else
 					{
+						// 如果名字不一致
 						char ip[INET_ADDRSTRLEN];
-						
+						// 把接口的地址转为本机字节
 						const char *conversion = inet_ntop(AF_INET, &nativeAddr4.sin_addr, ip, sizeof(ip));
 						
 						if ((conversion != NULL) && (strcmp(ip, iface) == 0))
 						{
 							// IP match
-							
+							// 如果转换后的地址与设置的地址一直，则设置端口号并创建IPv4的地址数据
 							nativeAddr4.sin_port = htons(port);
 							
 							addr4 = [NSMutableData dataWithBytes:&nativeAddr4 length:sizeof(nativeAddr4)];
@@ -4296,53 +4341,55 @@ enum GCDAsyncSocketConfig
 				else if ((addr6 == nil) && (cursor->ifa_addr->sa_family == AF_INET6))
 				{
 					// IPv6
-					
+					// 如果没取到IPv6的值，且当前cursor持有的接口地址属于IPv46，则将其赋值给nativeAddr6
 					struct sockaddr_in6 nativeAddr6;
 					memcpy(&nativeAddr6, cursor->ifa_addr, sizeof(nativeAddr6));
 					
 					if (strcmp(cursor->ifa_name, iface) == 0)
 					{
 						// Name match
-						
+						// 如果该接口的名字与设置的接口名字一直，则把设置的端口号赋值给该地址
 						nativeAddr6.sin6_port = htons(port);
-						
+						// 创建IPv6的地址数据
 						addr6 = [NSMutableData dataWithBytes:&nativeAddr6 length:sizeof(nativeAddr6)];
 					}
 					else
 					{
+						// 如果名字不一致
 						char ip[INET6_ADDRSTRLEN];
-						
+						// 把接口的地址转为本机字节
 						const char *conversion = inet_ntop(AF_INET6, &nativeAddr6.sin6_addr, ip, sizeof(ip));
 						
 						if ((conversion != NULL) && (strcmp(ip, iface) == 0))
 						{
 							// IP match
-							
+							// 如果转换后的地址与设置的地址一直，则设置端口号并创建IPv6的地址数据
 							nativeAddr6.sin6_port = htons(port);
 							
 							addr6 = [NSMutableData dataWithBytes:&nativeAddr6 length:sizeof(nativeAddr6)];
 						}
 					}
 				}
-				
+				// 指向下一个地址
 				cursor = cursor->ifa_next;
 			}
-			
+			// 释放
 			freeifaddrs(addrs);
 		}
 	}
-	
+	// 将取到的地址赋值
 	if (interfaceAddr4Ptr) *interfaceAddr4Ptr = addr4;
 	if (interfaceAddr6Ptr) *interfaceAddr6Ptr = addr6;
 }
-
+// 从url中获取接口地址
 - (NSData *)getInterfaceAddressFromUrl:(NSURL *)url
 {
+	// 检查url参数
 	NSString *path = url.path;
 	if (path.length == 0) {
 		return nil;
 	}
-	
+	// 创建unix套接字地址
     struct sockaddr_un nativeAddr;
     nativeAddr.sun_family = AF_UNIX;
     strlcpy(nativeAddr.sun_path, path.fileSystemRepresentation, sizeof(nativeAddr.sun_path));
@@ -4462,7 +4509,7 @@ enum GCDAsyncSocketConfig
 	flags |= kSocketCanAcceptBytes;
 	flags |= kWriteSourceSuspended;
 }
-
+// 获取是否为流的方式加密
 - (BOOL)usingCFStreamForTLS
 {
 	#if TARGET_OS_IPHONE
@@ -4478,7 +4525,7 @@ enum GCDAsyncSocketConfig
 	
 	return NO;
 }
-
+// 获取是否使用了TLS传输
 - (BOOL)usingSecureTransportForTLS
 {
 	// Invoking this method is equivalent to ![self usingCFStreamForTLS] (just more readable)
@@ -4496,44 +4543,48 @@ enum GCDAsyncSocketConfig
 	
 	return YES;
 }
-
+// 暂停读源
 - (void)suspendReadSource
 {
 	if (!(flags & kReadSourceSuspended))
 	{
+		// 如果读源没被暂停，则恢复，并且设置标记
 		LogVerbose(@"dispatch_suspend(readSource)");
 		
 		dispatch_suspend(readSource);
 		flags |= kReadSourceSuspended;
 	}
 }
-
+// 恢复读源
 - (void)resumeReadSource
 {
 	if (flags & kReadSourceSuspended)
 	{
+		// 如果读源被暂停了，则恢复，并且设置标记
 		LogVerbose(@"dispatch_resume(readSource)");
 		
 		dispatch_resume(readSource);
 		flags &= ~kReadSourceSuspended;
 	}
 }
-
+// 暂停写源
 - (void)suspendWriteSource
 {
 	if (!(flags & kWriteSourceSuspended))
 	{
+		// 如果写源没被暂停，则恢复，并且设置标记
 		LogVerbose(@"dispatch_suspend(writeSource)");
 		
 		dispatch_suspend(writeSource);
 		flags |= kWriteSourceSuspended;
 	}
 }
-
+// 恢复写源
 - (void)resumeWriteSource
 {
 	if (flags & kWriteSourceSuspended)
 	{
+		// 如果写源被暂停了，则恢复，并且设置标记
 		LogVerbose(@"dispatch_resume(writeSource)");
 		
 		dispatch_resume(writeSource);
@@ -7721,7 +7772,7 @@ static OSStatus SSLWriteFunction(SSLConnectionRef connection, const void *data, 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #if TARGET_OS_IPHONE
-
+// 唤醒线程时调用
 + (void)ignore:(id)_
 {}
 
@@ -7747,7 +7798,7 @@ static OSStatus SSLWriteFunction(SSLConnectionRef connection, const void *data, 
 		}
 	}});
 }
-
+// 停止流的线程
 + (void)stopCFStreamThreadIfNeeded
 {
 	LogTrace();
@@ -7757,24 +7808,25 @@ static OSStatus SSLWriteFunction(SSLConnectionRef connection, const void *data, 
 	// However, there's a tradeoff here, because it shouldn't remain alive forever.
 	// So what we're going to do is use a little delay before taking it down.
 	// This way it can be reused properly in situations where multiple sockets are continually in flux.
-	
+	// 设置30秒后移除，这是由于该线程创建的开销比较大，延时销毁方便复用
 	int delayInSeconds = 30;
 	dispatch_time_t when = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
 	dispatch_after(when, cfstreamThreadSetupQueue, ^{ @autoreleasepool {
 	#pragma clang diagnostic push
 	#pragma clang diagnostic warning "-Wimplicit-retain-self"
-		
+		// 如果当前线程的计数为0，则不需要处理
 		if (cfstreamThreadRetainCount == 0)
 		{
 			LogWarn(@"Logic error concerning cfstreamThread start / stop");
 			return_from_block;
 		}
-		
+		// 减少当前线程的计数，如果减少后为0了则调用取消线程，并调用忽略方法，并把线程设置为空
 		if (--cfstreamThreadRetainCount == 0)
 		{
 			[cfstreamThread cancel]; // set isCancelled flag
 			
 			// wake up the thread
+			// 唤醒线程
             [[self class] performSelector:@selector(ignore:)
                                  onThread:cfstreamThread
                                withObject:[NSNull null]
@@ -7827,7 +7879,7 @@ static OSStatus SSLWriteFunction(SSLConnectionRef connection, const void *data, 
 	if (asyncSocket->writeStream)
 		CFWriteStreamScheduleWithRunLoop(asyncSocket->writeStream, runLoop, kCFRunLoopDefaultMode);
 }
-
+// 从runloop移除流
 + (void)unscheduleCFStreams:(GCDAsyncSocket *)asyncSocket
 {
 	LogTrace();
@@ -7975,28 +8027,28 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	}
 	
 }
-
+// 创建读写流
 - (BOOL)createReadAndWriteStream
 {
 	LogTrace();
 	
 	NSAssert(dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey), @"Must be dispatched on socketQueue");
 	
-	
+	// 如果已经创建了则返回
 	if (readStream || writeStream)
 	{
 		// Streams already created
 		return YES;
 	}
-	
+	// 获取socketFD，优先取IPv4
 	int socketFD = (socket4FD != SOCKET_NULL) ? socket4FD : (socket6FD != SOCKET_NULL) ? socket6FD : socketUN;
-	
+	// 如果没有socketFD则无法创建
 	if (socketFD == SOCKET_NULL)
 	{
 		// Cannot create streams without a file descriptor
 		return NO;
 	}
-	
+	// 如果没有连接成功也不创建
 	if (![self isConnected])
 	{
 		// Cannot create streams until file descriptor is connected
@@ -8004,12 +8056,12 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	}
 	
 	LogVerbose(@"Creating read and write stream...");
-	
+	// 创建读写流
 	CFStreamCreatePairWithSocket(NULL, (CFSocketNativeHandle)socketFD, &readStream, &writeStream);
 	
 	// The kCFStreamPropertyShouldCloseNativeSocket property should be false by default (for our case).
 	// But let's not take any chances.
-	
+	// 设置读写流不会随着绑定的socket一起关闭
 	if (readStream)
 		CFReadStreamSetProperty(readStream, kCFStreamPropertyShouldCloseNativeSocket, kCFBooleanFalse);
 	if (writeStream)
@@ -8018,7 +8070,7 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	if ((readStream == NULL) || (writeStream == NULL))
 	{
 		LogWarn(@"Unable to create read and write stream...");
-		
+		// 如果读写流不能同时创建，则全部关闭释放
 		if (readStream)
 		{
 			CFReadStreamClose(readStream);
@@ -8095,7 +8147,7 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	
 	return YES;
 }
-
+// 从runloop移除流
 - (void)removeStreamsFromRunLoop
 {
 	LogTrace();
@@ -8106,15 +8158,16 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	if (flags & kAddedStreamsToRunLoop)
 	{
 		LogVerbose(@"Removing streams from runloop...");
-        
+        // 如果标记了给runloop增加过流，则在流的线程执行移除
         dispatch_sync(cfstreamThreadSetupQueue, ^{
             [[self class] performSelector:@selector(unscheduleCFStreams:)
                                  onThread:cfstreamThread
                                withObject:self
                             waitUntilDone:YES];
         });
+		// 停止流的线程
 		[[self class] stopCFStreamThreadIfNeeded];
-		
+		// 去除标记
 		flags &= ~kAddedStreamsToRunLoop;
 	}
 }
@@ -8389,7 +8442,7 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Class Utilities
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+// 通过host和端口获取地址组，域名解析
 + (NSMutableArray *)lookupHost:(NSString *)host port:(uint16_t)port error:(NSError **)errPtr
 {
 	LogTrace();
@@ -8399,6 +8452,7 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	
 	if ([host isEqualToString:@"localhost"] || [host isEqualToString:@"loopback"])
 	{
+		// 如果是localhost或环回地址，则返回对应的IPv4和IPv6的地址
 		// Use LOOPBACK address
 		struct sockaddr_in nativeAddr4;
 		nativeAddr4.sin_len         = sizeof(struct sockaddr_in);
@@ -8426,23 +8480,26 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	}
 	else
 	{
+		// 如果不是localhost或环回地址，先取端口号字符串
 		NSString *portStr = [NSString stringWithFormat:@"%hu", port];
 		
 		struct addrinfo hints, *res, *res0;
-		
+		// 初始化地址信息为未指定地址类型、socket、tcp
 		memset(&hints, 0, sizeof(hints));
 		hints.ai_family   = PF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_protocol = IPPROTO_TCP;
-		
+		// 根据host和端口创建一个sockaddr结构的链表
 		int gai_error = getaddrinfo([host UTF8String], [portStr UTF8String], &hints, &res0);
 		
 		if (gai_error)
 		{
+			// 设置失败，声明错误
 			error = [self gaiError:gai_error];
 		}
 		else
 		{
+			// 设置成功，则遍历链表，找出IPv4和IPv6地址的总数
 			NSUInteger capacity = 0;
 			for (res = res0; res; res = res->ai_next)
 			{
@@ -8450,16 +8507,16 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 					capacity++;
 				}
 			}
-			
+			// 声明对应大小的数组
 			addresses = [NSMutableArray arrayWithCapacity:capacity];
-			
+			// 遍历链表
 			for (res = res0; res; res = res->ai_next)
 			{
 				if (res->ai_family == AF_INET)
 				{
 					// Found IPv4 address.
 					// Wrap the native address structure, and add to results.
-					
+					// 获取IPv4地址并加入数组
 					NSData *address4 = [NSData dataWithBytes:res->ai_addr length:res->ai_addrlen];
 					[addresses addObject:address4];
 				}
@@ -8470,7 +8527,7 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 					
 					// Found IPv6 address.
 					// Wrap the native address structure, and add to results.
-					
+					// 获取IPv6地址，在转换端口号为网络字节序后，加入数组
 					struct sockaddr_in6 *sockaddr = (struct sockaddr_in6 *)(void *)res->ai_addr;
 					in_port_t *portPtr = &sockaddr->sin6_port;
 					if ((portPtr != NULL) && (*portPtr == 0)) {
@@ -8481,8 +8538,9 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 					[addresses addObject:address6];
 				}
 			}
+			//释放
 			freeaddrinfo(res0);
-			
+			// 如果没获取到则报错
 			if ([addresses count] == 0)
 			{
 				error = [self gaiError:EAI_FAIL];
@@ -8493,7 +8551,7 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	if (errPtr) *errPtr = error;
 	return addresses;
 }
-
+// 返回本机序的socket4地址
 + (NSString *)hostFromSockaddr4:(const struct sockaddr_in *)pSockaddr4
 {
 	char addrBuf[INET_ADDRSTRLEN];
@@ -8505,7 +8563,7 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	
 	return [NSString stringWithCString:addrBuf encoding:NSASCIIStringEncoding];
 }
-
+// 返回本机序的socket6地址
 + (NSString *)hostFromSockaddr6:(const struct sockaddr_in6 *)pSockaddr6
 {
 	char addrBuf[INET6_ADDRSTRLEN];
@@ -8517,12 +8575,12 @@ static void CFWriteStreamCallback (CFWriteStreamRef stream, CFStreamEventType ty
 	
 	return [NSString stringWithCString:addrBuf encoding:NSASCIIStringEncoding];
 }
-
+// 返回本机序的socket4地址端口号
 + (uint16_t)portFromSockaddr4:(const struct sockaddr_in *)pSockaddr4
 {
 	return ntohs(pSockaddr4->sin_port);
 }
-
+// 返回本机序的socket6地址端口号
 + (uint16_t)portFromSockaddr6:(const struct sockaddr_in6 *)pSockaddr6
 {
 	return ntohs(pSockaddr6->sin6_port);
