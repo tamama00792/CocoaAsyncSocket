@@ -5830,7 +5830,7 @@ enum GCDAsyncSocketConfig
 	
 	// Do not add any code here without first adding return statements in the error cases above.
 }
-
+// 读到文件末尾
 - (void)doReadEOF
 {
 	LogTrace();
@@ -5838,13 +5838,13 @@ enum GCDAsyncSocketConfig
 	// This method may be called more than once.
 	// If the EOF is read while there is still data in the preBuffer,
 	// then this method may be called continually after invocations of doReadData to see if it's time to disconnect.
-	
+	// 添加标记
 	flags |= kSocketHasReadEOF;
 	
 	if (flags & kSocketSecure)
 	{
 		// If the SSL layer has any buffered data, flush it into the preBuffer now.
-		
+		// 如果是加密数据，则处理ssl缓冲区数据
 		[self flushSSLBuffers];
 	}
 	
@@ -5853,11 +5853,12 @@ enum GCDAsyncSocketConfig
 	
 	if ((flags & kStartingReadTLS) || (flags & kStartingWriteTLS))
 	{
+	// 如果是开始读或写TLS的状态
 		// We received an EOF during or prior to startTLS.
 		// The SSL/TLS handshake is now impossible, so this is an unrecoverable situation.
 		
 		shouldDisconnect = YES;
-		
+		// 如果是使用了TLS传输遇到了文件终结符，则应该断开连接
 		if ([self usingSecureTransportForTLS])
 		{
 			error = [self sslError:errSSLClosedAbort];
@@ -5872,7 +5873,7 @@ enum GCDAsyncSocketConfig
 		// 
 		// As per the half-duplex contract, the socket will be closed when a write fails,
 		// or when the socket is manually closed.
-		
+		// 读流关闭的状态，因为还可以允许写完未传输完的数据，而且之前已经检查过一次（因此才会处于读流关闭的状态），所以不用断开连接
 		shouldDisconnect = NO;
 	}
 	else if ([preBuffer availableBytes] > 0)
@@ -5881,7 +5882,7 @@ enum GCDAsyncSocketConfig
 		
 		// Although we won't be able to read any more data from the socket,
 		// there is existing data that has been prebuffered that we can read.
-		
+		// 如果缓冲区还有数据则不应该断开连接
 		shouldDisconnect = NO;
 	}
 	else if (config & kAllowHalfDuplexConnection)
@@ -5891,9 +5892,10 @@ enum GCDAsyncSocketConfig
 		// has explicitly stated that it will not be sending us any more data.
 		// 
 		// Query the socket to see if it is still writeable. (Perhaps the peer will continue reading data from us)
-		
+		// 远端已经告知没有数据，但可能还需要读取这一端写入的数据
+		// 获取socketfd
 		int socketFD = (socket4FD != SOCKET_NULL) ? socket4FD : (socket6FD != SOCKET_NULL) ? socket6FD : socketUN;
-		
+		// 检测fd是否仍旧可写
 		struct pollfd pfd[1];
 		pfd[0].fd = socketFD;
 		pfd[0].events = POLLOUT;
@@ -5904,12 +5906,12 @@ enum GCDAsyncSocketConfig
 		if (pfd[0].revents & POLLOUT)
 		{
 			// Socket appears to still be writeable
-			
+			// socket仍旧可写，则不断开连接，但标记读流关闭
 			shouldDisconnect = NO;
 			flags |= kReadStreamClosed;
 			
 			// Notify the delegate that we're going half-duplex
-			
+			// 通知外部代理关闭了读流
 			__strong id<GCDAsyncSocketDelegate> theDelegate = delegate;
 
 			if (delegateQueue && [theDelegate respondsToSelector:@selector(socketDidCloseReadStream:)])
@@ -5922,48 +5924,58 @@ enum GCDAsyncSocketConfig
 		}
 		else
 		{
+		// socket已经不可写，应该断开连接
 			shouldDisconnect = YES;
 		}
 	}
 	else
 	{
+	// 其他情况，应该断开连接
 		shouldDisconnect = YES;
 	}
 	
 	
 	if (shouldDisconnect)
 	{
+	// 如果判断需要断开连接
 		if (error == nil)
 		{
+		// 如果没错误
 			if ([self usingSecureTransportForTLS])
 			{
+			// 如果使用了TLS加密
 				if (sslErrCode != noErr && sslErrCode != errSSLClosedGraceful)
 				{
+				// 如果有ssl错误，则创建ssl错误对象
 					error = [self sslError:sslErrCode];
 				}
 				else
 				{
+				// 否则创建错误对象为关闭连接
 					error = [self connectionClosedError];
 				}
 			}
 			else
 			{
+			// 没使用TLS加密，设置错误对象为关闭连接
 				error = [self connectionClosedError];
 			}
 		}
+		// 关闭连接
 		[self closeWithError:error];
 	}
 	else
 	{
+	// 不需要关闭连接
 		if (![self usingCFStreamForTLS])
 		{
 			// Suspend the read source (if needed)
-			
+			// 如果没使用CF流，则暂停读源
 			[self suspendReadSource];
 		}
 	}
 }
-
+// 完成当前的读包
 - (void)completeCurrentRead
 {
 	LogTrace();
@@ -5975,8 +5987,10 @@ enum GCDAsyncSocketConfig
 	
 	if (currentRead->bufferOwner)
 	{
+	// 读包是我们代表用户创建的
 		// We created the buffer on behalf of the user.
 		// Trim our buffer to be the proper size.
+		// 缩减读包多余的长度
 		[currentRead->buffer setLength:currentRead->bytesDone];
 		
 		result = currentRead->buffer;
@@ -5986,9 +6000,10 @@ enum GCDAsyncSocketConfig
 		// We did NOT create the buffer.
 		// The buffer is owned by the caller.
 		// Only trim the buffer if we had to increase its size.
-		
+		// 读包是调用方创建的，因此只有在已经增加了大小的情况下才缩减包
 		if ([currentRead->buffer length] > currentRead->originalBufferLength)
 		{
+		// 如果当前长度大于原本的长度，则重新设置大小
 			NSUInteger readSize = currentRead->startOffset + currentRead->bytesDone;
 			NSUInteger origSize = currentRead->originalBufferLength;
 			
@@ -5996,14 +6011,14 @@ enum GCDAsyncSocketConfig
 			
 			[currentRead->buffer setLength:buffSize];
 		}
-		
+		// 获取根据偏移量截取的数据
 		uint8_t *buffer = (uint8_t *)[currentRead->buffer mutableBytes] + currentRead->startOffset;
 		
 		result = [NSData dataWithBytesNoCopy:buffer length:currentRead->bytesDone freeWhenDone:NO];
 	}
 	
 	__strong id<GCDAsyncSocketDelegate> theDelegate = delegate;
-
+// 通知外部代理读到了数据
 	if (delegateQueue && [theDelegate respondsToSelector:@selector(socket:didReadData:withTag:)])
 	{
 		GCDAsyncReadPacket *theRead = currentRead; // Ensure currentRead retained since result may not own buffer
@@ -6016,22 +6031,24 @@ enum GCDAsyncSocketConfig
 	
 	[self endCurrentRead];
 }
-
+// 结束当前读操作
 - (void)endCurrentRead
 {
 	if (readTimer)
 	{
+		// 如果有读取的计时器，则清空
 		dispatch_source_cancel(readTimer);
 		readTimer = NULL;
 	}
 	
 	currentRead = nil;
 }
-
+// 设置读的计时器
 - (void)setupReadTimerWithTimeout:(NSTimeInterval)timeout
 {
 	if (timeout >= 0.0)
 	{
+	// 创建计时器
 		readTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, socketQueue);
 		
 		__weak GCDAsyncSocket *weakSelf = self;
@@ -6042,7 +6059,7 @@ enum GCDAsyncSocketConfig
 			
 			__strong GCDAsyncSocket *strongSelf = weakSelf;
 			if (strongSelf == nil) return_from_block;
-			
+			// 执行读超时处理
 			[strongSelf doReadTimeout];
 			
 		#pragma clang diagnostic pop
@@ -6050,6 +6067,8 @@ enum GCDAsyncSocketConfig
 		
 		#if !OS_OBJECT_USE_OBJC
 		dispatch_source_t theReadTimer = readTimer;
+		
+		// 设置取消计时器时释放
 		dispatch_source_set_cancel_handler(readTimer, ^{
 		#pragma clang diagnostic push
 		#pragma clang diagnostic warning "-Wimplicit-retain-self"
@@ -6060,31 +6079,32 @@ enum GCDAsyncSocketConfig
 		#pragma clang diagnostic pop
 		});
 		#endif
-		
+		// 设置计时器
 		dispatch_time_t tt = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC));
 		
 		dispatch_source_set_timer(readTimer, tt, DISPATCH_TIME_FOREVER, 0);
 		dispatch_resume(readTimer);
 	}
 }
-
+// 处理读超时
 - (void)doReadTimeout
 {
 	// This is a little bit tricky.
 	// Ideally we'd like to synchronously query the delegate about a timeout extension.
 	// But if we do so synchronously we risk a possible deadlock.
 	// So instead we have to do so asynchronously, and callback to ourselves from within the delegate block.
-	
+	// 标识读暂停
 	flags |= kReadsPaused;
 	
 	__strong id<GCDAsyncSocketDelegate> theDelegate = delegate;
 
 	if (delegateQueue && [theDelegate respondsToSelector:@selector(socket:shouldTimeoutReadWithTag:elapsed:bytesDone:)])
 	{
+	// 代理实现了是否应该超时的方法
 		GCDAsyncReadPacket *theRead = currentRead;
 		
 		dispatch_async(delegateQueue, ^{ @autoreleasepool {
-			
+			// 获取续的时长
 			NSTimeInterval timeoutExtension = 0.0;
 			
 			timeoutExtension = [theDelegate socket:self shouldTimeoutReadWithTag:theRead->tag
@@ -6092,35 +6112,41 @@ enum GCDAsyncSocketConfig
 			                                                           bytesDone:theRead->bytesDone];
 			
             dispatch_async(self->socketQueue, ^{ @autoreleasepool {
-				
+				// 处理续时长
 				[self doReadTimeoutWithExtension:timeoutExtension];
 			}});
 		}});
 	}
 	else
 	{
+	// 代理没实现，则处理不续时长
 		[self doReadTimeoutWithExtension:0.0];
 	}
 }
-
+// 处理超时，并续时长
 - (void)doReadTimeoutWithExtension:(NSTimeInterval)timeoutExtension
 {
 	if (currentRead)
 	{
+	// 如果当前读操作的包存在
 		if (timeoutExtension > 0.0)
 		{
+		// 如果需要续时长
 			currentRead->timeout += timeoutExtension;
 			
 			// Reschedule the timer
+			// 重新设置对应时长的计时器
 			dispatch_time_t tt = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutExtension * NSEC_PER_SEC));
 			dispatch_source_set_timer(readTimer, tt, DISPATCH_TIME_FOREVER, 0);
 			
 			// Unpause reads, and continue
+			// 取消暂停的标记，继续读数据
 			flags &= ~kReadsPaused;
 			[self doReadData];
 		}
 		else
 		{
+			// 如果不需要续时长，则关闭连接
 			LogVerbose(@"ReadTimeout");
 			
 			[self closeWithError:[self readTimeoutError]];
@@ -6131,11 +6157,12 @@ enum GCDAsyncSocketConfig
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark Writing
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+// 写数据，并传入超时时长、tag
 - (void)writeData:(NSData *)data withTimeout:(NSTimeInterval)timeout tag:(long)tag
 {
+// 如果没数据则返回
 	if ([data length] == 0) return;
-	
+	// 初始化写操作包
 	GCDAsyncWritePacket *packet = [[GCDAsyncWritePacket alloc] initWithData:data timeout:timeout tag:tag];
 	
 	dispatch_async(socketQueue, ^{ @autoreleasepool {
@@ -6144,6 +6171,8 @@ enum GCDAsyncSocketConfig
 		
         if ((self->flags & kSocketStarted) && !(self->flags & kForbidReadsWrites))
 		{
+		// 如果socket已经开始，且没有忽略读写操作
+		// 往写队列添加写操作包，并从写队列中尝试取一个操作包处理
             [self->writeQueue addObject:packet];
 			[self maybeDequeueWrite];
 		}
@@ -6152,7 +6181,7 @@ enum GCDAsyncSocketConfig
 	// Do not rely on the block being run in order to release the packet,
 	// as the queue might get released without the block completing.
 }
-
+// 获取当前写操作的进度、tag、已完成字节数和总字节数
 - (float)progressOfWriteReturningTag:(long *)tagPtr bytesDone:(NSUInteger *)donePtr total:(NSUInteger *)totalPtr
 {
 	__block float result = 0.0F;
@@ -6162,7 +6191,7 @@ enum GCDAsyncSocketConfig
         if (!self->currentWrite || ![self->currentWrite isKindOfClass:[GCDAsyncWritePacket class]])
 		{
 			// We're not writing anything right now.
-			
+			// 如果现在没有处理的写操作，则返回
 			if (tagPtr != NULL)   *tagPtr = 0;
 			if (donePtr != NULL)  *donePtr = 0;
 			if (totalPtr != NULL) *totalPtr = 0;
@@ -6171,6 +6200,7 @@ enum GCDAsyncSocketConfig
 		}
 		else
 		{
+		// 将正在处理的写操作对应的值返回
             NSUInteger done = self->currentWrite->bytesDone;
             NSUInteger total = [self->currentWrite->buffer length];
 			
@@ -6181,7 +6211,7 @@ enum GCDAsyncSocketConfig
 			result = (float)done / (float)total;
 		}
 	};
-	
+	// 保证在socket队列上处理
 	if (dispatch_get_specific(IsOnSocketQueueOrTargetQueueKey))
 		block();
 	else
@@ -6200,6 +6230,7 @@ enum GCDAsyncSocketConfig
  * 
  * This method also handles auto-disconnect post read/write completion.
 **/
+// 尝试处理队列中的写操作
 - (void)maybeDequeueWrite
 {
 	LogTrace();
@@ -6209,18 +6240,23 @@ enum GCDAsyncSocketConfig
 	// If we're not currently processing a write AND we have an available write stream
 	if ((currentWrite == nil) && (flags & kConnected))
 	{
+	// 如果当前没有正在处理的写操作包，并且socket已经连接上
 		if ([writeQueue count] > 0)
 		{
 			// Dequeue the next object in the write queue
+			// 如果写队列有内容
+			// 获取写队列中的第一个包，并移除
 			currentWrite = [writeQueue objectAtIndex:0];
 			[writeQueue removeObjectAtIndex:0];
 			
 			
 			if ([currentWrite isKindOfClass:[GCDAsyncSpecialPacket class]])
 			{
+				// 如果这是一个特殊包
 				LogVerbose(@"Dequeued GCDAsyncSpecialPacket");
 				
 				// Attempt to start TLS
+				// 尝试进行TLS加密
 				flags |= kStartingWriteTLS;
 				
 				// This method won't do anything unless both kStartingReadTLS and kStartingWriteTLS are set
@@ -6229,31 +6265,37 @@ enum GCDAsyncSocketConfig
 			else
 			{
 				LogVerbose(@"Dequeued GCDAsyncWritePacket");
-				
+				// 这不是特殊包lqa
 				// Setup write timer (if needed)
+				// 设置写的计时器
 				[self setupWriteTimerWithTimeout:currentWrite->timeout];
 				
 				// Immediately write, if possible
+				// 开始写数据
 				[self doWriteData];
 			}
 		}
 		else if (flags & kDisconnectAfterWrites)
 		{
+		// 如果设置了写完所有数据才断开连接
 			if (flags & kDisconnectAfterReads)
 			{
+			// 如果设置了读完所有数据才断开连接
 				if (([readQueue count] == 0) && (currentRead == nil))
 				{
+				// 如果读队列空了并且当前没有正在处理的读操作包，则断开连接
 					[self closeWithError:nil];
 				}
 			}
 			else
 			{
+			// 如果没设置读完所有数据才断开连接，则直接断开连接
 				[self closeWithError:nil];
 			}
 		}
 	}
 }
-
+// 进行写操作
 - (void)doWriteData
 {
 	LogTrace();
@@ -6262,12 +6304,14 @@ enum GCDAsyncSocketConfig
 	
 	if ((currentWrite == nil) || (flags & kWritesPaused))
 	{
+	// 如果当前没有正在处理的写操作包，或者写操作被暂停了
 		LogVerbose(@"No currentWrite or kWritesPaused");
 		
 		// Unable to write at this time
 		
 		if ([self usingCFStreamForTLS])
 		{
+		// 如果使用了CF流，则不处理
 			// CFWriteStream only fires once when there is available data.
 			// It won't fire again until we've invoked CFWriteStreamWrite.
 		}
@@ -6275,23 +6319,26 @@ enum GCDAsyncSocketConfig
 		{
 			// If the writeSource is firing, we need to pause it
 			// or else it will continue to fire over and over again.
-			
+			// 如果没使用CF流，需要暂停
 			if (flags & kSocketCanAcceptBytes)
 			{
+			// 如果socket可以接收数据，则暂停写源
 				[self suspendWriteSource];
 			}
 		}
 		return;
 	}
-	
+	// 当前有正在处理的写操作包且写操作没被暂停
 	if (!(flags & kSocketCanAcceptBytes))
 	{
+	// 如果socket无法接收字节
 		LogVerbose(@"No space available to write...");
 		
 		// No space available to write.
 		
 		if (![self usingCFStreamForTLS])
 		{
+		// 如果没使用CF流，则需要恢复写源
 			// Need to wait for writeSource to fire and notify us of
 			// available space in the socket's internal write buffer.
 			
@@ -6299,39 +6346,43 @@ enum GCDAsyncSocketConfig
 		}
 		return;
 	}
-	
+	// socket可以接收字节
 	if (flags & kStartingWriteTLS)
 	{
+	// 如果已经开始写TLS
 		LogVerbose(@"Waiting for SSL/TLS handshake to complete");
 		
 		// The writeQueue is waiting for SSL/TLS handshake to complete.
 		
 		if (flags & kStartingReadTLS)
 		{
+		// 如果已经开始读TLS
 			if ([self usingSecureTransportForTLS] && lastSSLHandshakeError == errSSLWouldBlock)
 			{
+			// 如果使用了TLS加密且上一次握手失败的原因是ssl被阻塞
 				// We are in the process of a SSL Handshake.
 				// We were waiting for available space in the socket's internal OS buffer to continue writing.
-			
+			// 继续ssl握手
 				[self ssl_continueSSLHandshake];
 			}
 		}
 		else
 		{
+		// 如果没有开始读ssl
 			// We are still waiting for the readQueue to drain and start the SSL/TLS process.
 			// We now know we can write to the socket.
 			
 			if (![self usingCFStreamForTLS])
 			{
 				// Suspend the write source or else it will continue to fire nonstop.
-				
+				// 如果没有使用CF流，则需要暂停写源
 				[self suspendWriteSource];
 			}
 		}
 		
 		return;
 	}
-	
+	// 如果还没开始写TLS
 	// Note: This method is not called if currentWrite is a GCDAsyncSpecialPacket (startTLS packet)
 	
 	BOOL waiting = NO;
@@ -6340,32 +6391,37 @@ enum GCDAsyncSocketConfig
 	
 	if (flags & kSocketSecure)
 	{
+	// 如果socket是加密的
 		if ([self usingCFStreamForTLS])
 		{
+		// 如果使用了CF流
 			#if TARGET_OS_IPHONE
 			
 			// 
 			// Writing data using CFStream (over internal TLS)
 			// 
-			
+			// 获取写指针
 			const uint8_t *buffer = (const uint8_t *)[currentWrite->buffer bytes] + currentWrite->bytesDone;
-			
+			// 获取当前写操作包剩余要写的长度
 			NSUInteger bytesToWrite = [currentWrite->buffer length] - currentWrite->bytesDone;
 			
 			if (bytesToWrite > SIZE_MAX) // NSUInteger may be bigger than size_t (write param 3)
 			{
+			// 修正要写的数据长度
 				bytesToWrite = SIZE_MAX;
 			}
-		
+		// 写数据
 			CFIndex result = CFWriteStreamWrite(writeStream, buffer, (CFIndex)bytesToWrite);
 			LogVerbose(@"CFWriteStreamWrite(%lu) = %li", (unsigned long)bytesToWrite, result);
 		
 			if (result < 0)
 			{
+			// 发生了错误，则创建错误对象
 				error = (__bridge_transfer NSError *)CFWriteStreamCopyError(writeStream);
 			}
 			else
 			{
+			// 获取成功写入的字节数
 				bytesWritten = (size_t)result;
 				
 				// We always set waiting to true in this scenario.
@@ -6378,6 +6434,7 @@ enum GCDAsyncSocketConfig
 		}
 		else
 		{
+		// 如果没使用CF流
 			// We're going to use the SSLWrite function.
 			// 
 			// OSStatus SSLWrite(SSLContextRef context, const void *data, size_t dataLength, size_t *processed)
