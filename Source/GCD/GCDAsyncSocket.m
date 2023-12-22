@@ -6484,12 +6484,14 @@ enum GCDAsyncSocketConfig
 			
 			if (hasCachedDataToWrite)
 			{
+			// 如果有缓存的数据
 				size_t processed = 0;
-				
+				调用一次SSLWrite
 				result = SSLWrite(sslContext, NULL, 0, &processed);
 				
 				if (result == noErr)
 				{
+				// 如果没报错，那么写的数据
 					bytesWritten = sslWriteCachedLength;
 					sslWriteCachedLength = 0;
 					
